@@ -1,0 +1,134 @@
+.obsidian-finance-view {
+  padding: var(--size-4-5);
+  overflow-y: auto;
+}
+
+.obsidian-finance-header,
+.obsidian-finance-actions,
+.obsidian-finance-transaction,
+.obsidian-finance-filters,
+.obsidian-finance-row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--size-4-2);
+}
+
+.obsidian-finance-header {
+  justify-content: space-between;
+  flex-wrap: wrap;
+  margin-bottom: var(--size-4-5);
+}
+
+.obsidian-finance-header h2,
+.obsidian-finance-card h3,
+.obsidian-finance-card h4 {
+  margin: 0;
+}
+
+.obsidian-finance-section {
+  margin-top: var(--size-4-6);
+}
+
+.obsidian-finance-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: var(--size-4-3);
+}
+
+.obsidian-finance-card,
+.obsidian-finance-empty {
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-m);
+  padding: var(--size-4-4);
+  background: var(--background-secondary);
+}
+
+.obsidian-finance-card {
+  display: flex;
+  flex-direction: column;
+  gap: var(--size-4-2);
+}
+
+.obsidian-finance-card > strong {
+  font-size: var(--font-ui-large);
+}
+
+.obsidian-finance-eyebrow {
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.obsidian-finance-summary-currency {
+  display: grid;
+  grid-template-columns: 0.7fr 1fr;
+  gap: var(--size-2-2) var(--size-4-2);
+  padding-top: var(--size-4-2);
+  border-top: 1px solid var(--background-modifier-border);
+}
+
+.obsidian-finance-summary-currency strong {
+  grid-row: span 3;
+}
+
+.obsidian-finance-transaction {
+  padding: var(--size-4-3) 0;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.obsidian-finance-transaction-main,
+.obsidian-finance-transaction-amount {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.obsidian-finance-transaction-main {
+  flex: 1;
+}
+
+.obsidian-finance-transaction-main span,
+.obsidian-finance-transaction-amount small,
+.obsidian-finance-muted {
+  color: var(--text-muted);
+}
+
+.obsidian-finance-transaction-amount {
+  align-items: flex-end;
+}
+
+.obsidian-finance-positive {
+  color: var(--color-green);
+}
+
+.obsidian-finance-negative {
+  color: var(--color-red);
+}
+
+.obsidian-finance-filters {
+  flex-wrap: wrap;
+  margin-bottom: var(--size-4-4);
+}
+
+.obsidian-finance-filters input {
+  flex: 1 1 260px;
+}
+
+.obsidian-finance-icon-button {
+  padding: var(--size-2-2);
+}
+
+.obsidian-finance-empty {
+  max-width: 560px;
+  text-align: center;
+  margin: var(--size-4-12) auto;
+}
+
+@media (max-width: 600px) {
+  .obsidian-finance-view { padding: var(--size-4-3); }
+  .obsidian-finance-actions { width: 100%; }
+  .obsidian-finance-actions button { flex: 1; }
+  .obsidian-finance-transaction { align-items: flex-start; flex-wrap: wrap; }
+  .obsidian-finance-transaction-main { flex-basis: calc(100% - 100px); }
+}

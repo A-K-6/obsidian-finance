@@ -1,0 +1,14 @@
+node_modules/
+main.js
+*.map
+data.json
+.DS_Store
+coverage/
+.codecompass/
+.claude/
+.pi-subagents/
+AGENTS.md
+claude.md
+
+# CodeCompass transient describe-swarm staging dir
+.codecompass/describe/
