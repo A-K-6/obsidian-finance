@@ -8,6 +8,7 @@ A minimal, private, local-first personal finance manager for [Obsidian](https://
 - Expenses, income, refunds, transfers, and credit-card payments
 - Add, edit, search, filter, and delete transactions
 - Weekly and monthly summaries
+- Net current balance across active accounts, separated by currency
 - Multi-currency accounts and cross-currency transfers
 - Credit limits and available-credit display
 - Responsive dashboard and transaction history
@@ -49,7 +50,7 @@ You can also install the repository with [BRAT](https://github.com/TfTHacker/obs
 ## Usage
 
 1. Open **Settings → Vault Finance** and add an account.
-2. Choose the ribbon icon or run **Vault Finance: Open dashboard**. The dashboard lives in the right sidebar by default.
+2. Choose the ribbon icon or run **Vault Finance: Open dashboard**. The dashboard lives in the right sidebar by default and includes quick buttons for adding transactions and accounts.
 3. Add an everyday expense with only its amount, description, and account. Use **Advanced options** for another transaction type, date, category, or note.
 4. Open transaction history to search, edit, delete, or insert a reference to a transaction in the active note.
 

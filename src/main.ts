@@ -18,6 +18,7 @@ import {
   accountBalances,
   localDate,
   monthRange,
+  netBalancesByCurrency,
   summarize,
   transactionLabel,
   weekRange
@@ -110,6 +111,8 @@ class DashboardView extends FinanceView {
     const actions = header.createDiv({ cls: "obsidian-finance-actions" });
     const addButton = actions.createEl("button", { text: "Add transaction", cls: "mod-cta" });
     addButton.addEventListener("click", () => this.plugin.openTransactionModal());
+    const accountButton = actions.createEl("button", { text: "Add account" });
+    accountButton.addEventListener("click", () => this.plugin.openAccountModal());
     const historyButton = actions.createEl("button", { text: "History" });
     historyButton.addEventListener("click", () => void this.plugin.activateView(HISTORY_VIEW));
 
@@ -123,6 +126,18 @@ class DashboardView extends FinanceView {
     }
 
     const balances = accountBalances(data.accounts, data.transactions);
+    const netTotals = netBalancesByCurrency(data.accounts, data.transactions);
+    const balanceSection = container.createDiv({ cls: "obsidian-finance-section" });
+    balanceSection.createEl("h3", { text: "Current balance" });
+    balanceSection.createEl("p", { text: "Cash and bank balances minus credit-card balances, kept separate by currency.", cls: "obsidian-finance-muted" });
+    const balanceGrid = balanceSection.createDiv({ cls: "obsidian-finance-grid" });
+    for (const [currency, total] of netTotals) {
+      const card = balanceGrid.createDiv({ cls: "obsidian-finance-card obsidian-finance-total-card" });
+      card.createSpan({ text: currency, cls: "obsidian-finance-eyebrow" });
+      card.createEl("strong", { text: formatMoney(total, currency, data.settings.locale), cls: total < 0 ? "obsidian-finance-negative" : "obsidian-finance-positive" });
+      card.createEl("small", { text: "Net across active accounts" });
+    }
+
     const accountSection = container.createDiv({ cls: "obsidian-finance-section" });
     accountSection.createEl("h3", { text: "Accounts" });
     const accountGrid = accountSection.createDiv({ cls: "obsidian-finance-grid" });

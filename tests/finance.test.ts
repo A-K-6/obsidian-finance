@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { accountBalances, monthRange, summarize, validateTransaction, weekRange } from "@/domain/finance";
+import { accountBalances, monthRange, netBalancesByCurrency, summarize, validateTransaction, weekRange } from "@/domain/finance";
 import type { Account, FinanceTransaction } from "@/types";
 
 const createdAt = "2026-07-01T00:00:00.000Z";
@@ -23,6 +23,12 @@ describe("finance rules", () => {
     expect(balances.get("bank")).toBe(265_00);
     expect(balances.get("card")).toBe(20_00);
     expect(balances.get("euro")).toBe(9_00);
+  });
+
+  it("calculates net current balance per currency across active accounts", () => {
+    const totals = netBalancesByCurrency(accounts, transactions);
+    expect(totals.get("USD")).toBe(245_00);
+    expect(totals.get("EUR")).toBe(9_00);
   });
 
   it("excludes transfers and card payments from summaries", () => {

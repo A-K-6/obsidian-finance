@@ -76,6 +76,18 @@ export function accountBalances(accounts: Account[], transactions: FinanceTransa
   return balances;
 }
 
+export function netBalancesByCurrency(accounts: Account[], transactions: FinanceTransaction[]): Map<string, number> {
+  const balances = accountBalances(accounts, transactions);
+  const totals = new Map<string, number>();
+  for (const account of accounts) {
+    if (account.archived) continue;
+    const balance = balances.get(account.id) ?? 0;
+    const contribution = account.kind === "credit-card" ? -balance : balance;
+    totals.set(account.currency, (totals.get(account.currency) ?? 0) + contribution);
+  }
+  return totals;
+}
+
 function simpleBalanceDirection(transaction: SimpleTransaction, account: Account): number {
   if (account.kind === "credit-card") return transaction.type === "expense" ? 1 : -1;
   return transaction.type === "expense" ? -1 : 1;
