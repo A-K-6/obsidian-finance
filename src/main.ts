@@ -492,7 +492,9 @@ class FinanceSettingTab extends PluginSettingTab {
   constructor(app: App, private readonly plugin: VaultFinancePlugin) { super(app, plugin); }
 
   private refreshSettingsTab(): void {
-    this.update();
+    const update = Reflect.get(this, "update") as unknown;
+    if (typeof update === "function") Reflect.apply(update, this, []);
+    else this.display();
   }
 
   getSettingDefinitions(): ReturnType<PluginSettingTab["getSettingDefinitions"]> {
@@ -571,6 +573,31 @@ class FinanceSettingTab extends PluginSettingTab {
         }]
       }
     ];
+  }
+
+  display(): void {
+    const { containerEl } = this;
+    containerEl.empty();
+    const data = this.plugin.store.snapshot();
+    new Setting(containerEl).setName("Default currency").setDesc("Used when creating a new account. Reports remain separated by currency.").addDropdown((dropdown) => dropdown.addOptions(currencyOptions()).setValue(data.settings.defaultCurrency).onChange(async (value) => { await this.plugin.store.updateSettings({ defaultCurrency: value }); }));
+    new Setting(containerEl).setName("Display locale").setDesc("Controls number and currency formatting.").addText((text) => text.setValue(data.settings.locale).onChange(async (value) => {
+      if (!value.trim()) return;
+      try { await this.plugin.store.updateSettings({ locale: normalizeLocale(value) }); }
+      catch (error) { new Notice(error instanceof Error ? error.message : "Invalid locale"); }
+    }));
+    new Setting(containerEl).setName("First day of week").addDropdown((dropdown) => dropdown.addOptions({ "0": "Sunday", "1": "Monday", "6": "Saturday" }).setValue(String(data.settings.weekStartsOn)).onChange(async (value) => { await this.plugin.store.updateSettings({ weekStartsOn: Number(value) }); }));
+    new Setting(containerEl).setName("Default account").addDropdown((dropdown) => dropdown.addOption("", "None").addOptions(accountOptions(data.accounts)).setValue(data.settings.defaultAccountId ?? "").onChange(async (value) => { await this.plugin.store.updateSettings({ defaultAccountId: value || undefined }); }));
+
+    new Setting(containerEl).setName("Accounts").setHeading();
+    new Setting(containerEl).setName("Add an account").setDesc("Store only a nickname and optional last four digits for cards.").addButton((button) => button.setButtonText("Add account").setCta().onClick(() => this.plugin.openAccountModal(undefined, () => this.display())));
+    for (const account of data.accounts) {
+      const setting = new Setting(containerEl).setName(account.name).setDesc(`${account.kind} · ${account.currency}${account.archived ? " · archived" : ""}`);
+      setting.addButton((button) => button.setIcon("pencil").setTooltip("Edit account").onClick(() => this.plugin.openAccountModal(account, () => this.display())));
+      if (!account.archived) setting.addButton((button) => button.setIcon("archive").setTooltip("Archive account").onClick(async () => { await this.plugin.store.archiveAccount(account.id); this.display(); }));
+    }
+
+    new Setting(containerEl).setName("Privacy").setHeading();
+    containerEl.createEl("p", { text: "All finance data is stored locally in this plugin's data.json inside your vault configuration. The plugin has no network or clipboard access. Do not enter full card numbers, security codes, PINs, or banking passwords." });
   }
 
 }
