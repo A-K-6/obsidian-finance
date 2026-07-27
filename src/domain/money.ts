@@ -51,7 +51,7 @@ export function parseNonNegativeMoney(value: string, currency: string): number {
 }
 
 function parseMoneyValue(value: string, currency: string): number {
-  const trimmed = value.trim();
+  const trimmed = value.trim().replace(/[,_'\s\u00a0\u202f]/g, "");
   const digits = currencyInfo(currency).minorUnits;
   const pattern = digits === 0 ? /^\d+$/ : new RegExp(`^\\d+(?:\\.\\d{1,${digits}})?$`);
   if (!pattern.test(trimmed)) {
@@ -69,7 +69,8 @@ export function formatMoney(minor: number, currency: string, locale = "en-US"): 
     style: "currency",
     currency,
     minimumFractionDigits: digits,
-    maximumFractionDigits: digits
+    maximumFractionDigits: digits,
+    useGrouping: true
   }).format(minor / 10 ** digits);
 }
 

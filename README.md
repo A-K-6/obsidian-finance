@@ -51,7 +51,7 @@ You can also install the repository with [BRAT](https://github.com/TfTHacker/obs
 1. Open **Settings → Vault Finance** and add an account.
 2. Choose the ribbon icon or run **Vault Finance: Open dashboard**. The dashboard lives in the right sidebar by default.
 3. Add an everyday expense with only its amount, description, and account. Use **Advanced options** for another transaction type, date, category, or note.
-4. Open transaction history to search, edit, delete, or copy a reference to a transaction.
+4. Open transaction history to search, edit, delete, or insert a reference to a transaction in the active note.
 
 ## Referencing transactions in notes
 
@@ -63,11 +63,11 @@ transaction: transaction-id
 ```
 ````
 
-In Reading view, the block renders the transaction's current amount, date, type, account, and description. Editing the original transaction updates what is rendered the next time the note is rendered. You can also copy this block using the link button beside a transaction in the dashboard or history.
+In Reading view, the block renders the transaction's current amount, date, type, account, and description. Editing the original transaction updates what is rendered the next time the note is rendered. You can also insert this block into the active note using the link button beside a transaction in the dashboard or history.
 
 ## Data storage
 
-Accounts, settings, and transactions are stored in `.obsidian/plugins/vault-finance/data.json` through Obsidian's local plugin storage. Amounts are integer minor units, and records use stable IDs. Reports and balances are derived from the transaction records rather than stored as duplicate totals.
+Accounts, settings, and transactions are stored in `.obsidian/plugins/vault-finance/data.json` through Obsidian's local plugin storage. Amount fields add comma separators while you type and show a localized preview. Stored amounts remain exact integer minor units, and records use stable IDs. Reports and balances are derived from the transaction records rather than stored as duplicate totals.
 
 ## Development
 

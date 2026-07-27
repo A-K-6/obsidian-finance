@@ -58,6 +58,23 @@ function transactionReference(transactionId: string): string {
   return `\`\`\`vault-finance\ntransaction: ${transactionId}\n\`\`\``;
 }
 
+function amountDescription(value: string, currency: string, locale: string): string {
+  if (!value.trim()) return "Thousands are separated with commas while you type.";
+  try {
+    return `Preview: ${formatMoney(parseMoney(value, currency), currency, locale)}`;
+  } catch {
+    return "Thousands are separated with commas while you type.";
+  }
+}
+
+function groupAmountInput(value: string): string {
+  const compact = value.replace(/[,_'\s\u00a0\u202f]/g, "");
+  if (!/^\d*(?:\.\d*)?$/.test(compact)) return value;
+  const [whole = "", fraction] = compact.split(".");
+  const groupedWhole = whole.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return fraction === undefined ? groupedWhole : `${groupedWhole}.${fraction}`;
+}
+
 abstract class FinanceView extends ItemView {
   private unsubscribe?: () => void;
 
@@ -211,9 +228,9 @@ class AccountModal extends Modal {
       this.name = account.name;
       this.kind = account.kind;
       this.currency = account.currency;
-      this.openingBalance = minorToInput(account.openingBalanceMinor, account.currency);
+      this.openingBalance = groupAmountInput(minorToInput(account.openingBalanceMinor, account.currency));
       this.lastFour = account.lastFour ?? "";
-      this.creditLimit = account.creditLimitMinor === undefined ? "" : minorToInput(account.creditLimitMinor, account.currency);
+      this.creditLimit = account.creditLimitMinor === undefined ? "" : groupAmountInput(minorToInput(account.creditLimitMinor, account.currency));
     }
   }
 
@@ -226,10 +243,18 @@ class AccountModal extends Modal {
     const accountingFieldsLocked = this.account !== undefined && this.plugin.accountHasTransactions(this.account.id);
     new Setting(this.contentEl).setName("Type").setDesc(accountingFieldsLocked ? "Cannot change after transactions have been recorded." : "").addDropdown((dropdown) => dropdown.addOptions({ cash: "Cash", bank: "Bank", "credit-card": "Credit card" }).setValue(this.kind).setDisabled(accountingFieldsLocked).onChange((value) => { this.kind = value as AccountKind; this.render(); }));
     new Setting(this.contentEl).setName("Currency").setDesc(accountingFieldsLocked ? "Cannot change after transactions have been recorded." : "An account always uses one currency.").addDropdown((dropdown) => dropdown.addOptions(currencyOptions()).setValue(this.currency).setDisabled(accountingFieldsLocked).onChange((value) => { this.currency = value; this.openingBalance = "0"; this.creditLimit = ""; this.render(); }));
-    new Setting(this.contentEl).setName(this.kind === "credit-card" ? "Opening amount owed" : "Opening balance").addText((text) => text.setValue(this.openingBalance).onChange((value) => this.openingBalance = value));
+    new Setting(this.contentEl).setName(this.kind === "credit-card" ? "Opening amount owed" : "Opening balance").addText((text) => text.setValue(this.openingBalance).onChange((value) => {
+      const grouped = groupAmountInput(value);
+      this.openingBalance = grouped;
+      if (grouped !== value) text.setValue(grouped);
+    }));
     if (this.kind === "credit-card") {
       new Setting(this.contentEl).setName("Last four digits (optional)").setDesc("Never enter the full card number or security credentials.").addText((text) => text.setPlaceholder("1234").setValue(this.lastFour).onChange((value) => this.lastFour = value));
-      new Setting(this.contentEl).setName("Credit limit (optional)").addText((text) => text.setValue(this.creditLimit).onChange((value) => this.creditLimit = value));
+      new Setting(this.contentEl).setName("Credit limit (optional)").addText((text) => text.setValue(this.creditLimit).onChange((value) => {
+        const grouped = groupAmountInput(value);
+        this.creditLimit = grouped;
+        if (grouped !== value) text.setValue(grouped);
+      }));
     }
     const footer = this.contentEl.createDiv({ cls: "modal-button-container" });
     footer.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
@@ -285,11 +310,11 @@ class TransactionModal extends Modal {
       if (isTransferTransaction(transaction)) {
         this.fromAccountId = transaction.fromAccountId;
         this.toAccountId = transaction.toAccountId;
-        this.amount = minorToInput(transaction.sourceAmountMinor, transaction.sourceCurrency);
-        this.destinationAmount = minorToInput(transaction.destinationAmountMinor, transaction.destinationCurrency);
+        this.amount = groupAmountInput(minorToInput(transaction.sourceAmountMinor, transaction.sourceCurrency));
+        this.destinationAmount = groupAmountInput(minorToInput(transaction.destinationAmountMinor, transaction.destinationCurrency));
       } else {
         this.accountId = transaction.accountId;
-        this.amount = minorToInput(transaction.amountMinor, transaction.currency);
+        this.amount = groupAmountInput(minorToInput(transaction.amountMinor, transaction.currency));
         this.payee = transaction.payee ?? "";
         this.category = transaction.category ?? "";
       }
@@ -329,7 +354,16 @@ class TransactionModal extends Modal {
     const options = accountOptions(accounts, (account) => this.type !== "income" || account.kind !== "credit-card", currentAccountIds);
     if (!options[this.accountId]) this.accountId = Object.keys(options)[0] ?? "";
     const account = accounts.find((item) => item.id === this.accountId);
-    new Setting(this.contentEl).setName(`Amount${account ? ` (${account.currency})` : ""}`).addText((text) => text.setPlaceholder("0.00").setValue(this.amount).onChange((value) => this.amount = value));
+    const locale = this.plugin.store.snapshot().settings.locale;
+    const amountSetting = new Setting(this.contentEl)
+      .setName(`Amount${account ? ` (${account.currency})` : ""}`)
+      .setDesc(account ? amountDescription(this.amount, account.currency, locale) : "Select an account.");
+    amountSetting.addText((text) => text.setPlaceholder("1,000,000").setValue(this.amount).onChange((value) => {
+      const grouped = groupAmountInput(value);
+      this.amount = grouped;
+      if (grouped !== value) text.setValue(grouped);
+      if (account) amountSetting.setDesc(amountDescription(grouped, account.currency, locale));
+    }));
     new Setting(this.contentEl).setName("Description (optional)").addText((text) => text.setPlaceholder("Coffee, groceries, salary…").setValue(this.payee).onChange((value) => this.payee = value));
     new Setting(this.contentEl).setName("Account").addDropdown((dropdown) => dropdown.addOptions(options).setValue(this.accountId).onChange((value) => { this.accountId = value; this.render(); }));
     if (this.showAdvanced) {
@@ -347,9 +381,26 @@ class TransactionModal extends Modal {
     new Setting(this.contentEl).setName("To account").addDropdown((dropdown) => dropdown.addOptions(destinationOptions).setValue(this.toAccountId).onChange((value) => { this.toAccountId = value; this.render(); }));
     const from = accounts.find((account) => account.id === this.fromAccountId);
     const to = accounts.find((account) => account.id === this.toAccountId);
-    new Setting(this.contentEl).setName(`Amount sent${from ? ` (${from.currency})` : ""}`).addText((text) => text.setValue(this.amount).onChange((value) => this.amount = value));
+    const locale = this.plugin.store.snapshot().settings.locale;
+    const sourceAmountSetting = new Setting(this.contentEl)
+      .setName(`Amount sent${from ? ` (${from.currency})` : ""}`)
+      .setDesc(from ? amountDescription(this.amount, from.currency, locale) : "Select a source account.");
+    sourceAmountSetting.addText((text) => text.setPlaceholder("1,000,000").setValue(this.amount).onChange((value) => {
+      const grouped = groupAmountInput(value);
+      this.amount = grouped;
+      if (grouped !== value) text.setValue(grouped);
+      if (from) sourceAmountSetting.setDesc(amountDescription(grouped, from.currency, locale));
+    }));
     if (from && to && from.currency !== to.currency) {
-      new Setting(this.contentEl).setName(`Amount received (${to.currency})`).setDesc("Enter the actual converted amount. No live exchange rate is used.").addText((text) => text.setValue(this.destinationAmount).onChange((value) => this.destinationAmount = value));
+      const destinationAmountSetting = new Setting(this.contentEl)
+        .setName(`Amount received (${to.currency})`)
+        .setDesc(amountDescription(this.destinationAmount, to.currency, locale));
+      destinationAmountSetting.addText((text) => text.setPlaceholder("1,000,000").setValue(this.destinationAmount).onChange((value) => {
+        const grouped = groupAmountInput(value);
+        this.destinationAmount = grouped;
+        if (grouped !== value) text.setValue(grouped);
+        destinationAmountSetting.setDesc(amountDescription(grouped, to.currency, locale));
+      }));
     }
   }
 
@@ -424,6 +475,90 @@ class TransactionReferenceModal extends SuggestModal<FinanceTransaction> {
 
 class FinanceSettingTab extends PluginSettingTab {
   constructor(app: App, private readonly plugin: VaultFinancePlugin) { super(app, plugin); }
+
+  private refreshSettingsTab(): void {
+    const update = Reflect.get(this, "update") as unknown;
+    if (typeof update === "function") Reflect.apply(update, this, []);
+    else this.display();
+  }
+
+  getSettingDefinitions(): ReturnType<PluginSettingTab["getSettingDefinitions"]> {
+    const data = this.plugin.store.snapshot();
+    const accountItems = [
+      {
+        name: "Add an account",
+        desc: "Store only a nickname and optional last four digits for cards.",
+        render: (setting: Setting) => {
+          setting.addButton((button) => button.setButtonText("Add account").setCta().onClick(() => {
+            this.plugin.openAccountModal(undefined, () => this.refreshSettingsTab());
+          }));
+        }
+      },
+      ...data.accounts.map((account) => ({
+        name: account.name,
+        desc: `${account.kind} · ${account.currency}${account.archived ? " · archived" : ""}`,
+        render: (setting: Setting) => {
+          setting.addButton((button) => button.setIcon("pencil").setTooltip("Edit account").onClick(() => {
+            this.plugin.openAccountModal(account, () => this.refreshSettingsTab());
+          }));
+          if (!account.archived) {
+            setting.addButton((button) => button.setIcon("archive").setTooltip("Archive account").onClick(async () => {
+              await this.plugin.store.archiveAccount(account.id);
+              this.refreshSettingsTab();
+            }));
+          }
+        }
+      }))
+    ];
+
+    return [
+      {
+        name: "Default currency",
+        desc: "Used when creating a new account. Reports remain separated by currency.",
+        render: (setting: Setting) => {
+          setting.addDropdown((dropdown) => dropdown.addOptions(currencyOptions()).setValue(data.settings.defaultCurrency).onChange(async (value) => {
+            await this.plugin.store.updateSettings({ defaultCurrency: value });
+          }));
+        }
+      },
+      {
+        name: "Display locale",
+        desc: "Controls number and currency formatting.",
+        render: (setting: Setting) => {
+          setting.addText((text) => text.setValue(data.settings.locale).onChange(async (value) => {
+            if (!value.trim()) return;
+            try { await this.plugin.store.updateSettings({ locale: normalizeLocale(value) }); }
+            catch (error) { new Notice(error instanceof Error ? error.message : "Invalid locale"); }
+          }));
+        }
+      },
+      {
+        name: "First day of week",
+        render: (setting: Setting) => {
+          setting.addDropdown((dropdown) => dropdown.addOptions({ "0": "Sunday", "1": "Monday", "6": "Saturday" }).setValue(String(data.settings.weekStartsOn)).onChange(async (value) => {
+            await this.plugin.store.updateSettings({ weekStartsOn: Number(value) });
+          }));
+        }
+      },
+      {
+        name: "Default account",
+        render: (setting: Setting) => {
+          setting.addDropdown((dropdown) => dropdown.addOption("", "None").addOptions(accountOptions(data.accounts)).setValue(data.settings.defaultAccountId ?? "").onChange(async (value) => {
+            await this.plugin.store.updateSettings({ defaultAccountId: value || undefined });
+          }));
+        }
+      },
+      { type: "group", heading: "Accounts", items: accountItems },
+      {
+        type: "group",
+        heading: "Privacy",
+        items: [{
+          name: "Local-only storage",
+          desc: "Finance data stays in this plugin's data.json. The plugin has no network or clipboard access. Never enter full card numbers, security codes, PINs, or banking passwords."
+        }]
+      }
+    ];
+  }
 
   display(): void {
     const { containerEl } = this;
@@ -540,18 +675,14 @@ export default class VaultFinancePlugin extends Plugin {
     editButton.addEventListener("click", () => this.openTransactionModal(transaction));
   }
 
-  async copyTransactionReference(container: HTMLElement, transactionId: string): Promise<void> {
-    const clipboard = container.ownerDocument.defaultView?.navigator.clipboard;
-    if (!clipboard) {
-      new Notice("Clipboard is unavailable");
+  insertTransactionReference(transactionId: string): void {
+    const editor = this.app.workspace.activeEditor?.editor;
+    if (!editor) {
+      new Notice("Open a note in editing mode before inserting a transaction reference");
       return;
     }
-    try {
-      await clipboard.writeText(transactionReference(transactionId));
-      new Notice("Transaction reference copied");
-    } catch {
-      new Notice("Could not copy transaction reference");
-    }
+    editor.replaceSelection(transactionReference(transactionId));
+    new Notice("Transaction reference inserted");
   }
 
   renderTransactionRow(container: HTMLElement, transaction: FinanceTransaction): void {
@@ -569,7 +700,7 @@ export default class VaultFinancePlugin extends Plugin {
       if (transaction.sourceCurrency !== transaction.destinationCurrency) amount.createEl("small", { text: `→ ${formatMoney(transaction.destinationAmountMinor, transaction.destinationCurrency, data.settings.locale)}` });
     } else amount.createEl("strong", { text: formatMoney(transaction.amountMinor, transaction.currency, data.settings.locale) });
     const buttons = row.createDiv({ cls: "obsidian-finance-row-actions" });
-    addIconButton(buttons, "link", "Copy transaction reference", () => void this.copyTransactionReference(container, transaction.id));
+    addIconButton(buttons, "link", "Insert transaction reference", () => this.insertTransactionReference(transaction.id));
     addIconButton(buttons, "pencil", "Edit transaction", () => this.openTransactionModal(transaction));
     addIconButton(buttons, "trash-2", "Delete transaction", () => {
       const modal = new ConfirmModal(this.app, "Delete transaction?", "This action cannot be undone.", async () => {

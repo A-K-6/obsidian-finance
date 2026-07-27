@@ -15,6 +15,11 @@ describe("money", () => {
     expect(parseMoney("1.234", "KWD")).toBe(1234);
   });
 
+  it("accepts comma and space grouping separators", () => {
+    expect(parseMoney("1,250,000.50", "USD")).toBe(125_000_050);
+    expect(parseMoney("1 250 000", "IRR")).toBe(125_000_000);
+  });
+
   it("rejects invalid precision and non-positive amounts", () => {
     expect(() => parseMoney("1.234", "USD")).toThrow();
     expect(() => parseMoney("0", "USD")).toThrow();
