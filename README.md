@@ -104,7 +104,7 @@ transaction: transaction-id
 
 In Reading view, the block renders the transaction's current type, amount, date, account, and description. Because the block references the original transaction instead of duplicating it, edits are reflected the next time the note is rendered.
 
-You can also use the link button beside a transaction to insert its reference into the active note.
+You can also use **Add reference to current note** beside a transaction. In Editing mode, the reference is inserted at the cursor. In Reading mode, it is appended to the currently open Markdown note and Vault Finance confirms the note name.
 
 ## Commands and hotkeys
 
@@ -195,7 +195,7 @@ https://github.com/A-K-6/obsidian-finance
 
 - Minimum Obsidian version: **1.7.2**
 - Desktop-only: **No**
-- Current plugin version: **1.0.4**
+- Current plugin version: **1.0.5**
 
 The plugin uses the declarative settings API on Obsidian 1.13+ and maintains a legacy settings fallback for earlier supported versions.
 

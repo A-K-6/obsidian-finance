@@ -691,14 +691,30 @@ export default class VaultFinancePlugin extends Plugin {
     editButton.addEventListener("click", () => this.openTransactionModal(transaction));
   }
 
-  insertTransactionReference(transactionId: string): void {
+  async insertTransactionReference(transactionId: string): Promise<void> {
+    const reference = transactionReference(transactionId);
     const editor = this.app.workspace.activeEditor?.editor;
-    if (!editor) {
-      new Notice("Open a note in editing mode before inserting a transaction reference");
+    if (editor) {
+      editor.replaceSelection(reference);
+      new Notice("Transaction reference inserted");
       return;
     }
-    editor.replaceSelection(transactionReference(transactionId));
-    new Notice("Transaction reference inserted");
+
+    const file = this.app.workspace.getActiveFile();
+    if (!file || file.extension !== "md") {
+      new Notice("Open the journal note where you want to add this transaction");
+      return;
+    }
+
+    try {
+      await this.app.vault.process(file, (content) => {
+        const separator = content.length === 0 || content.endsWith("\n\n") ? "" : content.endsWith("\n") ? "\n" : "\n\n";
+        return `${content}${separator}${reference}\n`;
+      });
+      new Notice(`Transaction reference added to ${file.basename}`);
+    } catch {
+      new Notice(`Could not add the transaction reference to ${file.basename}`);
+    }
   }
 
   renderTransactionRow(container: HTMLElement, transaction: FinanceTransaction): void {
@@ -716,7 +732,7 @@ export default class VaultFinancePlugin extends Plugin {
       if (transaction.sourceCurrency !== transaction.destinationCurrency) amount.createEl("small", { text: `→ ${formatMoney(transaction.destinationAmountMinor, transaction.destinationCurrency, data.settings.locale)}` });
     } else amount.createEl("strong", { text: formatMoney(transaction.amountMinor, transaction.currency, data.settings.locale) });
     const buttons = row.createDiv({ cls: "obsidian-finance-row-actions" });
-    addIconButton(buttons, "link", "Insert transaction reference", () => this.insertTransactionReference(transaction.id));
+    addIconButton(buttons, "file-plus-2", "Add reference to current note", () => void this.insertTransactionReference(transaction.id));
     addIconButton(buttons, "pencil", "Edit transaction", () => this.openTransactionModal(transaction));
     addIconButton(buttons, "trash-2", "Delete transaction", () => {
       const modal = new ConfirmModal(this.app, "Delete transaction?", "This action cannot be undone.", async () => {
