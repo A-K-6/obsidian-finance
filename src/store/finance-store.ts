@@ -35,8 +35,9 @@ export class FinanceStore {
     }
     if (!isRecord(raw)) throw new Error("Finance data is not a valid object. Restore data.json from a backup.");
     const schemaVersion = raw.schemaVersion ?? 1;
-    if (schemaVersion !== 1) {
-      throw new Error(`Finance data uses unsupported schema version ${String(schemaVersion)}. Update the plugin before continuing.`);
+    if (typeof schemaVersion !== "number" || schemaVersion !== 1) {
+      const versionLabel = typeof schemaVersion === "string" || typeof schemaVersion === "number" ? schemaVersion : "unknown";
+      throw new Error(`Finance data uses unsupported schema version ${versionLabel}. Update the plugin before continuing.`);
     }
     if (!Array.isArray(raw.accounts) || !Array.isArray(raw.transactions)) {
       throw new Error("Finance data is missing its accounts or transactions list. Restore data.json from a backup.");

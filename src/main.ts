@@ -1,11 +1,13 @@
 import {
   App,
+  Editor,
   ItemView,
   Modal,
   Notice,
   Plugin,
   PluginSettingTab,
   Setting,
+  SuggestModal,
   WorkspaceLeaf,
   setIcon
 } from "obsidian";
@@ -22,13 +24,13 @@ import {
 } from "@/domain/finance";
 import { FinanceStore } from "@/store/finance-store";
 
-const DASHBOARD_VIEW = "obsidian-finance-dashboard";
-const HISTORY_VIEW = "obsidian-finance-history";
+const DASHBOARD_VIEW = "vault-finance-dashboard";
+const HISTORY_VIEW = "vault-finance-history";
 const TRANSACTION_TYPES: TransactionType[] = ["expense", "income", "refund", "transfer", "card-payment"];
 
 function id(): string {
   const bytes = new Uint8Array(16);
-  if (globalThis.crypto?.getRandomValues) globalThis.crypto.getRandomValues(bytes);
+  if (window.crypto?.getRandomValues) window.crypto.getRandomValues(bytes);
   else for (let index = 0; index < bytes.length; index += 1) bytes[index] = Math.floor(Math.random() * 256);
   bytes[6] = (bytes[6] & 0x0f) | 0x40;
   bytes[8] = (bytes[8] & 0x3f) | 0x80;
@@ -52,10 +54,14 @@ function addIconButton(container: HTMLElement, icon: string, label: string, acti
   button.addEventListener("click", action);
 }
 
+function transactionReference(transactionId: string): string {
+  return `\`\`\`vault-finance\ntransaction: ${transactionId}\n\`\`\``;
+}
+
 abstract class FinanceView extends ItemView {
   private unsubscribe?: () => void;
 
-  constructor(leaf: WorkspaceLeaf, protected readonly plugin: ObsidianFinancePlugin) {
+  constructor(leaf: WorkspaceLeaf, protected readonly plugin: VaultFinancePlugin) {
     super(leaf);
   }
 
@@ -106,7 +112,7 @@ class DashboardView extends FinanceView {
     for (const account of data.accounts.filter((item) => !item.archived)) {
       const balance = balances.get(account.id) ?? 0;
       const card = accountGrid.createDiv({ cls: "obsidian-finance-card" });
-      card.createEl("span", { text: account.kind === "credit-card" ? "Credit card" : account.kind, cls: "obsidian-finance-eyebrow" });
+      card.createSpan({ text: account.kind === "credit-card" ? "Credit card" : account.kind, cls: "obsidian-finance-eyebrow" });
       card.createEl("h4", { text: account.name });
       card.createEl("strong", { text: formatMoney(balance, account.currency, data.settings.locale), cls: balance < 0 ? "obsidian-finance-negative" : "" });
       card.createEl("small", { text: account.kind === "credit-card" ? "Current amount owed" : "Current balance" });
@@ -140,9 +146,9 @@ class DashboardView extends FinanceView {
     for (const [currency, summary] of summaries) {
       const block = card.createDiv({ cls: "obsidian-finance-summary-currency" });
       block.createEl("strong", { text: currency });
-      block.createEl("span", { text: `Spent ${formatMoney(summary.expenses - summary.refunds, currency, locale)}` });
-      block.createEl("span", { text: `Income ${formatMoney(summary.income, currency, locale)}` });
-      block.createEl("span", { text: `Net ${formatMoney(summary.net, currency, locale)}`, cls: summary.net < 0 ? "obsidian-finance-negative" : "obsidian-finance-positive" });
+      block.createSpan({ text: `Spent ${formatMoney(summary.expenses - summary.refunds, currency, locale)}` });
+      block.createSpan({ text: `Income ${formatMoney(summary.income, currency, locale)}` });
+      block.createSpan({ text: `Net ${formatMoney(summary.net, currency, locale)}`, cls: summary.net < 0 ? "obsidian-finance-negative" : "obsidian-finance-positive" });
     }
   }
 }
@@ -198,7 +204,7 @@ class AccountModal extends Modal {
   private creditLimit = "";
   private isSaving = false;
 
-  constructor(app: App, private readonly plugin: ObsidianFinancePlugin, private readonly account?: Account, private readonly afterSave?: () => void) {
+  constructor(app: App, private readonly plugin: VaultFinancePlugin, private readonly account?: Account, private readonly afterSave?: () => void) {
     super(app);
     this.currency = plugin.store.snapshot().settings.defaultCurrency;
     if (account) {
@@ -222,7 +228,7 @@ class AccountModal extends Modal {
     new Setting(this.contentEl).setName("Currency").setDesc(accountingFieldsLocked ? "Cannot change after transactions have been recorded." : "An account always uses one currency.").addDropdown((dropdown) => dropdown.addOptions(currencyOptions()).setValue(this.currency).setDisabled(accountingFieldsLocked).onChange((value) => { this.currency = value; this.openingBalance = "0"; this.creditLimit = ""; this.render(); }));
     new Setting(this.contentEl).setName(this.kind === "credit-card" ? "Opening amount owed" : "Opening balance").addText((text) => text.setValue(this.openingBalance).onChange((value) => this.openingBalance = value));
     if (this.kind === "credit-card") {
-      new Setting(this.contentEl).setName("Last four digits (optional)").setDesc("Never enter the full card number, PIN, or CVV.").addText((text) => text.setPlaceholder("1234").setValue(this.lastFour).onChange((value) => this.lastFour = value));
+      new Setting(this.contentEl).setName("Last four digits (optional)").setDesc("Never enter the full card number or security credentials.").addText((text) => text.setPlaceholder("1234").setValue(this.lastFour).onChange((value) => this.lastFour = value));
       new Setting(this.contentEl).setName("Credit limit (optional)").addText((text) => text.setValue(this.creditLimit).onChange((value) => this.creditLimit = value));
     }
     const footer = this.contentEl.createDiv({ cls: "modal-button-container" });
@@ -265,12 +271,14 @@ class TransactionModal extends Modal {
   private category = "";
   private note = "";
   private isSaving = false;
+  private showAdvanced = false;
 
-  constructor(app: App, private readonly plugin: ObsidianFinancePlugin, private readonly transaction?: FinanceTransaction) {
+  constructor(app: App, private readonly plugin: VaultFinancePlugin, private readonly transaction?: FinanceTransaction) {
     super(app);
     const data = plugin.store.snapshot();
     this.accountId = data.settings.defaultAccountId ?? data.accounts.find((account) => !account.archived)?.id ?? "";
     if (transaction) {
+      this.showAdvanced = true;
       this.type = transaction.type;
       this.date = transaction.date;
       this.note = transaction.note ?? "";
@@ -294,28 +302,39 @@ class TransactionModal extends Modal {
     const accounts = this.plugin.store.snapshot().accounts;
     this.contentEl.empty();
     this.contentEl.createEl("h2", { text: this.transaction ? "Edit transaction" : "Add transaction" });
-    new Setting(this.contentEl).setName("Type").addDropdown((dropdown) => dropdown.addOptions(Object.fromEntries(TRANSACTION_TYPES.map((type) => [type, transactionLabel(type)]))).setValue(this.type).onChange((value) => { this.type = value as TransactionType; this.render(); }));
-    const dateSetting = new Setting(this.contentEl).setName("Date").addText((text) => text.setValue(this.date).onChange((value) => this.date = value));
-    dateSetting.controlEl.querySelector("input")?.setAttribute("type", "date");
+    if (this.showAdvanced) {
+      new Setting(this.contentEl).setName("Type").addDropdown((dropdown) => dropdown.addOptions(Object.fromEntries(TRANSACTION_TYPES.map((type) => [type, transactionLabel(type)]))).setValue(this.type).onChange((value) => { this.type = value as TransactionType; this.render(); }));
+      const dateSetting = new Setting(this.contentEl).setName("Date").addText((text) => text.setValue(this.date).onChange((value) => this.date = value));
+      dateSetting.controlEl.querySelector("input")?.setAttribute("type", "date");
+    }
 
     if (this.type === "transfer" || this.type === "card-payment") this.renderTransferFields(accounts);
     else this.renderSimpleFields(accounts);
 
-    new Setting(this.contentEl).setName("Note (optional)").addTextArea((text) => text.setPlaceholder("Add details").setValue(this.note).onChange((value) => this.note = value));
+    if (this.showAdvanced) {
+      new Setting(this.contentEl).setName("Note (optional)").addTextArea((text) => text.setPlaceholder("Add details").setValue(this.note).onChange((value) => this.note = value));
+    }
+    const advancedButton = this.contentEl.createEl("button", {
+      text: this.showAdvanced ? "Hide advanced options" : "Advanced options",
+      cls: "obsidian-finance-advanced-toggle"
+    });
+    advancedButton.addEventListener("click", () => { this.showAdvanced = !this.showAdvanced; this.render(); });
     const footer = this.contentEl.createDiv({ cls: "modal-button-container" });
     footer.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
-    footer.createEl("button", { text: "Save transaction", cls: "mod-cta" }).addEventListener("click", () => void this.save());
+    footer.createEl("button", { text: this.transaction ? "Save changes" : "Add transaction", cls: "mod-cta" }).addEventListener("click", () => void this.save());
   }
 
   private renderSimpleFields(accounts: Account[]): void {
     const currentAccountIds = new Set(!this.transaction || isTransferTransaction(this.transaction) ? [] : [this.transaction.accountId]);
     const options = accountOptions(accounts, (account) => this.type !== "income" || account.kind !== "credit-card", currentAccountIds);
     if (!options[this.accountId]) this.accountId = Object.keys(options)[0] ?? "";
-    new Setting(this.contentEl).setName("Account").addDropdown((dropdown) => dropdown.addOptions(options).setValue(this.accountId).onChange((value) => { this.accountId = value; this.render(); }));
     const account = accounts.find((item) => item.id === this.accountId);
     new Setting(this.contentEl).setName(`Amount${account ? ` (${account.currency})` : ""}`).addText((text) => text.setPlaceholder("0.00").setValue(this.amount).onChange((value) => this.amount = value));
-    new Setting(this.contentEl).setName("Payee (optional)").addText((text) => text.setPlaceholder("Store or employer").setValue(this.payee).onChange((value) => this.payee = value));
-    new Setting(this.contentEl).setName("Category (optional)").addText((text) => text.setPlaceholder("Groceries").setValue(this.category).onChange((value) => this.category = value));
+    new Setting(this.contentEl).setName("Description (optional)").addText((text) => text.setPlaceholder("Coffee, groceries, salary…").setValue(this.payee).onChange((value) => this.payee = value));
+    new Setting(this.contentEl).setName("Account").addDropdown((dropdown) => dropdown.addOptions(options).setValue(this.accountId).onChange((value) => { this.accountId = value; this.render(); }));
+    if (this.showAdvanced) {
+      new Setting(this.contentEl).setName("Category (optional)").addText((text) => text.setPlaceholder("Groceries").setValue(this.category).onChange((value) => this.category = value));
+    }
   }
 
   private renderTransferFields(accounts: Account[]): void {
@@ -364,16 +383,54 @@ class TransactionModal extends Modal {
   }
 }
 
+class TransactionReferenceModal extends SuggestModal<FinanceTransaction> {
+  constructor(app: App, private readonly plugin: VaultFinancePlugin, private readonly editor: Editor) {
+    super(app);
+    this.setPlaceholder("Search transactions by date, description, category, or account");
+  }
+
+  getSuggestions(query: string): FinanceTransaction[] {
+    const data = this.plugin.store.snapshot();
+    const normalizedQuery = query.trim().toLowerCase();
+    return [...data.transactions]
+      .sort((first, second) => second.date.localeCompare(first.date) || second.updatedAt.localeCompare(first.updatedAt))
+      .filter((transaction) => {
+        if (!normalizedQuery) return true;
+        const accountNames = isTransferTransaction(transaction)
+          ? data.accounts.filter((account) => account.id === transaction.fromAccountId || account.id === transaction.toAccountId).map((account) => account.name)
+          : [data.accounts.find((account) => account.id === transaction.accountId)?.name ?? ""];
+        const details = isTransferTransaction(transaction) ? [] : [transaction.payee ?? "", transaction.category ?? ""];
+        return [transaction.date, transaction.type, transaction.note ?? "", ...accountNames, ...details]
+          .some((value) => value.toLowerCase().includes(normalizedQuery));
+      });
+  }
+
+  renderSuggestion(transaction: FinanceTransaction, element: HTMLElement): void {
+    const data = this.plugin.store.snapshot();
+    const accountName = isTransferTransaction(transaction)
+      ? `${data.accounts.find((account) => account.id === transaction.fromAccountId)?.name ?? "Unknown"} → ${data.accounts.find((account) => account.id === transaction.toAccountId)?.name ?? "Unknown"}`
+      : data.accounts.find((account) => account.id === transaction.accountId)?.name ?? "Unknown";
+    const amount = isTransferTransaction(transaction)
+      ? formatMoney(transaction.sourceAmountMinor, transaction.sourceCurrency, data.settings.locale)
+      : formatMoney(transaction.amountMinor, transaction.currency, data.settings.locale);
+    element.createDiv({ text: `${transactionLabel(transaction.type)} · ${amount}` });
+    element.createEl("small", { text: `${transaction.date} · ${accountName}` });
+  }
+
+  onChooseSuggestion(transaction: FinanceTransaction): void {
+    this.editor.replaceSelection(transactionReference(transaction.id));
+  }
+}
+
 class FinanceSettingTab extends PluginSettingTab {
-  constructor(app: App, private readonly plugin: ObsidianFinancePlugin) { super(app, plugin); }
+  constructor(app: App, private readonly plugin: VaultFinancePlugin) { super(app, plugin); }
 
   display(): void {
     const { containerEl } = this;
     containerEl.empty();
-    containerEl.createEl("h2", { text: "Obsidian Finance" });
     const data = this.plugin.store.snapshot();
     new Setting(containerEl).setName("Default currency").setDesc("Used when creating a new account. Reports remain separated by currency.").addDropdown((dropdown) => dropdown.addOptions(currencyOptions()).setValue(data.settings.defaultCurrency).onChange(async (value) => { await this.plugin.store.updateSettings({ defaultCurrency: value }); }));
-    new Setting(containerEl).setName("Display locale").setDesc("Controls number and currency formatting, for example en-US or de-DE.").addText((text) => text.setValue(data.settings.locale).onChange(async (value) => {
+    new Setting(containerEl).setName("Display locale").setDesc("Controls number and currency formatting.").addText((text) => text.setValue(data.settings.locale).onChange(async (value) => {
       if (!value.trim()) return;
       try { await this.plugin.store.updateSettings({ locale: normalizeLocale(value) }); }
       catch (error) { new Notice(error instanceof Error ? error.message : "Invalid locale"); }
@@ -381,7 +438,7 @@ class FinanceSettingTab extends PluginSettingTab {
     new Setting(containerEl).setName("First day of week").addDropdown((dropdown) => dropdown.addOptions({ "0": "Sunday", "1": "Monday", "6": "Saturday" }).setValue(String(data.settings.weekStartsOn)).onChange(async (value) => { await this.plugin.store.updateSettings({ weekStartsOn: Number(value) }); }));
     new Setting(containerEl).setName("Default account").addDropdown((dropdown) => dropdown.addOption("", "None").addOptions(accountOptions(data.accounts)).setValue(data.settings.defaultAccountId ?? "").onChange(async (value) => { await this.plugin.store.updateSettings({ defaultAccountId: value || undefined }); }));
 
-    containerEl.createEl("h3", { text: "Accounts" });
+    new Setting(containerEl).setName("Accounts").setHeading();
     new Setting(containerEl).setName("Add an account").setDesc("Store only a nickname and optional last four digits for cards.").addButton((button) => button.setButtonText("Add account").setCta().onClick(() => this.plugin.openAccountModal(undefined, () => this.display())));
     for (const account of data.accounts) {
       const setting = new Setting(containerEl).setName(account.name).setDesc(`${account.kind} · ${account.currency}${account.archived ? " · archived" : ""}`);
@@ -389,12 +446,12 @@ class FinanceSettingTab extends PluginSettingTab {
       if (!account.archived) setting.addButton((button) => button.setIcon("archive").setTooltip("Archive account").onClick(async () => { await this.plugin.store.archiveAccount(account.id); this.display(); }));
     }
 
-    containerEl.createEl("h3", { text: "Privacy" });
+    new Setting(containerEl).setName("Privacy").setHeading();
     containerEl.createEl("p", { text: "All finance data is stored locally in this plugin's data.json inside your vault configuration. The plugin has no network access. Do not enter full card numbers, CVVs, PINs, or banking passwords." });
   }
 }
 
-export default class ObsidianFinancePlugin extends Plugin {
+export default class VaultFinancePlugin extends Plugin {
   store = new FinanceStore((data) => this.saveData(data));
 
   async onload(): Promise<void> {
@@ -412,19 +469,26 @@ export default class ObsidianFinancePlugin extends Plugin {
     this.addCommand({ id: "open-history", name: "Open transaction history", callback: () => void this.activateView(HISTORY_VIEW) });
     this.addCommand({ id: "add-transaction", name: "Add transaction", callback: () => this.openTransactionModal() });
     this.addCommand({ id: "add-account", name: "Add account", callback: () => this.openAccountModal() });
+    this.addCommand({
+      id: "insert-transaction-reference",
+      name: "Insert transaction reference",
+      editorCallback: (editor) => new TransactionReferenceModal(this.app, this, editor).open()
+    });
+    this.registerMarkdownCodeBlockProcessor("vault-finance", (source, element) => this.renderTransactionReference(source, element));
     this.addSettingTab(new FinanceSettingTab(this.app, this));
+    this.app.workspace.onLayoutReady(() => {
+      if (this.app.workspace.getLeavesOfType(DASHBOARD_VIEW).length === 0) {
+        void this.activateView(DASHBOARD_VIEW, false);
+      }
+    });
   }
 
-  async onunload(): Promise<void> {
-    this.app.workspace.detachLeavesOfType(DASHBOARD_VIEW);
-    this.app.workspace.detachLeavesOfType(HISTORY_VIEW);
-  }
-
-  async activateView(type: string): Promise<void> {
+  async activateView(type: string, reveal = true): Promise<void> {
     const existing = this.app.workspace.getLeavesOfType(type)[0];
-    const leaf = existing ?? this.app.workspace.getLeaf(true);
+    const leaf = existing ?? (type === DASHBOARD_VIEW ? this.app.workspace.getRightLeaf(false) : this.app.workspace.getLeaf(true));
+    if (!leaf) return;
     if (!existing) await leaf.setViewState({ type, active: true });
-    this.app.workspace.revealLeaf(leaf);
+    if (reveal) await this.app.workspace.revealLeaf(leaf);
   }
 
   openTransactionModal(transaction?: FinanceTransaction): void {
@@ -446,6 +510,50 @@ export default class ObsidianFinancePlugin extends Plugin {
       : transaction.accountId === accountId);
   }
 
+  renderTransactionReference(source: string, element: HTMLElement): void {
+    element.empty();
+    const transactionId = source.split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.startsWith("transaction:"))
+      ?.slice("transaction:".length).trim();
+    const data = this.store.snapshot();
+    const transaction = data.transactions.find((item) => item.id === transactionId);
+    if (!transaction) {
+      element.createDiv({ text: "Transaction reference not found.", cls: "obsidian-finance-muted" });
+      return;
+    }
+
+    const card = element.createDiv({ cls: "obsidian-finance-card obsidian-finance-reference" });
+    const heading = card.createDiv({ cls: "obsidian-finance-reference-heading" });
+    heading.createEl("strong", { text: transactionLabel(transaction.type) });
+    heading.createSpan({ text: transaction.date });
+    const accountName = isTransferTransaction(transaction)
+      ? `${data.accounts.find((account) => account.id === transaction.fromAccountId)?.name ?? "Unknown"} → ${data.accounts.find((account) => account.id === transaction.toAccountId)?.name ?? "Unknown"}`
+      : data.accounts.find((account) => account.id === transaction.accountId)?.name ?? "Unknown";
+    card.createDiv({ text: accountName, cls: "obsidian-finance-muted" });
+    const amount = isTransferTransaction(transaction)
+      ? formatMoney(transaction.sourceAmountMinor, transaction.sourceCurrency, data.settings.locale)
+      : formatMoney(transaction.amountMinor, transaction.currency, data.settings.locale);
+    card.createEl("strong", { text: amount });
+    if (!isTransferTransaction(transaction) && transaction.payee) card.createDiv({ text: transaction.payee });
+    const editButton = card.createEl("button", { text: "Edit transaction" });
+    editButton.addEventListener("click", () => this.openTransactionModal(transaction));
+  }
+
+  async copyTransactionReference(container: HTMLElement, transactionId: string): Promise<void> {
+    const clipboard = container.ownerDocument.defaultView?.navigator.clipboard;
+    if (!clipboard) {
+      new Notice("Clipboard is unavailable");
+      return;
+    }
+    try {
+      await clipboard.writeText(transactionReference(transactionId));
+      new Notice("Transaction reference copied");
+    } catch {
+      new Notice("Could not copy transaction reference");
+    }
+  }
+
   renderTransactionRow(container: HTMLElement, transaction: FinanceTransaction): void {
     const data = this.store.snapshot();
     const row = container.createDiv({ cls: "obsidian-finance-transaction" });
@@ -454,13 +562,14 @@ export default class ObsidianFinancePlugin extends Plugin {
     const accounts = isTransferTransaction(transaction)
       ? `${data.accounts.find((account) => account.id === transaction.fromAccountId)?.name ?? "Unknown"} → ${data.accounts.find((account) => account.id === transaction.toAccountId)?.name ?? "Unknown"}`
       : data.accounts.find((account) => account.id === transaction.accountId)?.name ?? "Unknown";
-    main.createEl("span", { text: `${transaction.date} · ${accounts}${!isTransferTransaction(transaction) && transaction.payee ? ` · ${transaction.payee}` : ""}` });
+    main.createSpan({ text: `${transaction.date} · ${accounts}${!isTransferTransaction(transaction) && transaction.payee ? ` · ${transaction.payee}` : ""}` });
     const amount = row.createDiv({ cls: "obsidian-finance-transaction-amount" });
     if (isTransferTransaction(transaction)) {
       amount.createEl("strong", { text: formatMoney(transaction.sourceAmountMinor, transaction.sourceCurrency, data.settings.locale) });
       if (transaction.sourceCurrency !== transaction.destinationCurrency) amount.createEl("small", { text: `→ ${formatMoney(transaction.destinationAmountMinor, transaction.destinationCurrency, data.settings.locale)}` });
     } else amount.createEl("strong", { text: formatMoney(transaction.amountMinor, transaction.currency, data.settings.locale) });
     const buttons = row.createDiv({ cls: "obsidian-finance-row-actions" });
+    addIconButton(buttons, "link", "Copy transaction reference", () => void this.copyTransactionReference(container, transaction.id));
     addIconButton(buttons, "pencil", "Edit transaction", () => this.openTransactionModal(transaction));
     addIconButton(buttons, "trash-2", "Delete transaction", () => {
       const modal = new ConfirmModal(this.app, "Delete transaction?", "This action cannot be undone.", async () => {

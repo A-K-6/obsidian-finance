@@ -1,4 +1,4 @@
-# Obsidian Finance
+# Vault Finance
 
 A minimal, private, local-first personal finance manager for [Obsidian](https://obsidian.md).
 
@@ -17,7 +17,7 @@ A minimal, private, local-first personal finance manager for [Obsidian](https://
 
 Each account has one currency. Amounts are stored as integers in the currency's smallest unit, avoiding floating-point rounding errors. The plugin supports common zero-, two-, and three-decimal currencies.
 
-Weekly and monthly totals are shown separately for each currency. Obsidian Finance intentionally does not add unrelated currencies or fetch live exchange rates. A cross-currency transfer records both the amount sent and the amount actually received.
+Weekly and monthly totals are shown separately for each currency. Vault Finance intentionally does not add unrelated currencies or fetch live exchange rates. A cross-currency transfer records both the amount sent and the amount actually received.
 
 ## Transaction rules
 
@@ -29,7 +29,7 @@ Weekly and monthly totals are shown separately for each currency. Obsidian Finan
 
 ## Privacy and safety
 
-Data is saved locally through Obsidian's plugin storage in `.obsidian/plugins/obsidian-finance/data.json`. The plugin makes no network requests.
+Data is saved locally through Obsidian's plugin storage in `.obsidian/plugins/vault-finance/data.json`. The plugin makes no network requests.
 
 **Never enter a full card number, CVV, PIN, banking password, or other authentication secret.** The optional card field accepts only the last four digits for identification.
 
@@ -40,18 +40,34 @@ Your vault sync and backup configuration determines how this data is copied betw
 ### From a GitHub release
 
 1. Download `main.js`, `manifest.json`, and `styles.css` from the latest release.
-2. Create `<your-vault>/.obsidian/plugins/obsidian-finance/`.
+2. Create `<your-vault>/.obsidian/plugins/vault-finance/`.
 3. Copy the three files into that folder.
-4. Reload Obsidian and enable **Obsidian Finance** under **Community plugins**.
+4. Reload Obsidian and enable **Vault Finance** under **Community plugins**.
 
 You can also install the repository with [BRAT](https://github.com/TfTHacker/obsidian42-brat) while it is awaiting inclusion in the Obsidian community directory.
 
 ## Usage
 
-1. Open **Settings → Obsidian Finance** and add an account.
-2. Choose the ribbon icon or run **Obsidian Finance: Open dashboard**.
-3. Add transactions with the dashboard button or **Obsidian Finance: Add transaction**.
-4. Open transaction history to search, edit, or delete records.
+1. Open **Settings → Vault Finance** and add an account.
+2. Choose the ribbon icon or run **Vault Finance: Open dashboard**. The dashboard lives in the right sidebar by default.
+3. Add an everyday expense with only its amount, description, and account. Use **Advanced options** for another transaction type, date, category, or note.
+4. Open transaction history to search, edit, delete, or copy a reference to a transaction.
+
+## Referencing transactions in notes
+
+Every transaction has a stable ID. Use **Vault Finance: Insert transaction reference** from the command palette while editing a note, then choose a transaction. The command inserts:
+
+````markdown
+```vault-finance
+transaction: transaction-id
+```
+````
+
+In Reading view, the block renders the transaction's current amount, date, type, account, and description. Editing the original transaction updates what is rendered the next time the note is rendered. You can also copy this block using the link button beside a transaction in the dashboard or history.
+
+## Data storage
+
+Accounts, settings, and transactions are stored in `.obsidian/plugins/vault-finance/data.json` through Obsidian's local plugin storage. Amounts are integer minor units, and records use stable IDs. Reports and balances are derived from the transaction records rather than stored as duplicate totals.
 
 ## Development
 

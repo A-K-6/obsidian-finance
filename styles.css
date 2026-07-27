@@ -125,6 +125,28 @@
   margin: var(--size-4-12) auto;
 }
 
+.obsidian-finance-advanced-toggle {
+  margin-top: var(--size-4-3);
+  background: transparent;
+  color: var(--text-accent);
+  box-shadow: none;
+}
+
+.obsidian-finance-reference {
+  max-width: 520px;
+  border-left: 3px solid var(--interactive-accent);
+}
+
+.obsidian-finance-reference-heading {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--size-4-2);
+}
+
+.obsidian-finance-reference-heading span {
+  color: var(--text-muted);
+}
+
 @media (max-width: 600px) {
   .obsidian-finance-view { padding: var(--size-4-3); }
   .obsidian-finance-actions { width: 100%; }

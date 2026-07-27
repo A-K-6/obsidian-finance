@@ -1,9 +1,10 @@
 {
-  "id": "obsidian-finance",
-  "name": "Obsidian Finance",
-  "version": "0.1.0",
-  "minAppVersion": "1.5.0",
+  "id": "vault-finance",
+  "name": "Vault Finance",
+  "version": "1.0.0",
+  "minAppVersion": "1.7.2",
   "description": "Track accounts, credit cards, transactions, and multi-currency weekly and monthly summaries locally.",
   "author": "Jabama",
+  "authorUrl": "https://github.com/A-K-6",
   "isDesktopOnly": false
 }
