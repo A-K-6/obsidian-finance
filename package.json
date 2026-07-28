@@ -1,6 +1,6 @@
 {
   "name": "obsidian-finance",
-  "version": "1.0.5",
+  "version": "2.0.0",
   "description": "A minimal, local-first personal finance manager for Obsidian.",
   "main": "main.js",
   "scripts": {
@@ -32,5 +32,8 @@
     "typescript": "^5.8.0",
     "typescript-eslint": "^8.65.0",
     "vitest": "^3.2.0"
+  },
+  "dependencies": {
+    "@internationalized/date": "^3.12.2"
   }
 }

@@ -1,5 +1,8 @@
-import type { Account, FinanceTransaction, SimpleTransaction, TransactionType } from "@/types";
-import { isTransferTransaction } from "@/types";
+import { safeAddMinor } from "@/domain/budgets";
+import { calendarMonthRange, isCanonicalDate, todayCanonical, weekRangeForDate } from "@/domain/calendar";
+import { validateCreditCardFields } from "@/domain/credit-cards";
+import type { Account, Category, FinanceTransaction, SimpleTransaction, TransactionType } from "@/types";
+import { categoryTypeForTransaction, isTransferTransaction } from "@/types";
 
 export interface CurrencySummary {
   income: number;
@@ -10,18 +13,21 @@ export interface CurrencySummary {
 
 export function validateAccount(account: Account): void {
   if (!account.name.trim()) throw new Error("Account name is required.");
-  if (!account.currency.trim()) throw new Error("Account currency is required.");
+  if (!/^[A-Z]{3}$/.test(account.currency)) throw new Error("Account currency is invalid.");
   if (!Number.isSafeInteger(account.openingBalanceMinor) || account.openingBalanceMinor < 0) {
     throw new Error("Opening balance must be zero or greater.");
   }
   if (account.lastFour && !/^\d{4}$/.test(account.lastFour)) throw new Error("Last four digits must contain exactly four numbers.");
-  if (account.creditLimitMinor !== undefined && (!Number.isSafeInteger(account.creditLimitMinor) || account.creditLimitMinor <= 0)) {
-    throw new Error("Credit limit must be greater than zero.");
-  }
+  validateCreditCardFields(account);
 }
 
-export function validateTransaction(transaction: FinanceTransaction, accounts: Account[], allowedArchivedAccountIds: ReadonlySet<string> = new Set()): void {
-  if (!isValidLocalDate(transaction.date)) throw new Error("A valid transaction date is required.");
+export function validateTransaction(
+  transaction: FinanceTransaction,
+  accounts: Account[],
+  allowedArchivedAccountIds: ReadonlySet<string> = new Set(),
+  categories: Category[] = []
+): void {
+  if (!isCanonicalDate(transaction.date)) throw new Error("A valid transaction date is required.");
   if (isTransferTransaction(transaction)) {
     const from = accounts.find((account) => account.id === transaction.fromAccountId);
     const to = accounts.find((account) => account.id === transaction.toAccountId);
@@ -33,9 +39,9 @@ export function validateTransaction(transaction: FinanceTransaction, accounts: A
     if (transaction.sourceCurrency !== from.currency || transaction.destinationCurrency !== to.currency) {
       throw new Error("Transfer currencies must match their accounts.");
     }
-    if (transaction.sourceAmountMinor <= 0 || transaction.destinationAmountMinor <= 0) throw new Error("Transfer amounts must be greater than zero.");
-    if (!Number.isSafeInteger(transaction.sourceAmountMinor) || !Number.isSafeInteger(transaction.destinationAmountMinor)) {
-      throw new Error("Transfer amount is outside the supported range.");
+    if (!Number.isSafeInteger(transaction.sourceAmountMinor) || !Number.isSafeInteger(transaction.destinationAmountMinor)
+      || transaction.sourceAmountMinor <= 0 || transaction.destinationAmountMinor <= 0) {
+      throw new Error("Transfer amounts must be greater than zero and within the supported range.");
     }
     if (transaction.type === "card-payment") {
       if (from.kind === "credit-card" || to.kind !== "credit-card") throw new Error("A card payment must go from a cash or bank account to a credit card.");
@@ -54,24 +60,28 @@ export function validateTransaction(transaction: FinanceTransaction, accounts: A
   if (account.currency !== transaction.currency) throw new Error("Transaction currency must match its account.");
   if (!Number.isSafeInteger(transaction.amountMinor) || transaction.amountMinor <= 0) throw new Error("Amount must be greater than zero.");
   if (transaction.type === "income" && account.kind === "credit-card") throw new Error("Income cannot be posted to a credit card. Use a refund or card payment.");
+  if (transaction.categoryId !== undefined) {
+    const category = categories.find((item) => item.id === transaction.categoryId);
+    if (!category || category.type !== categoryTypeForTransaction(transaction.type)) throw new Error("Transaction category does not match its type.");
+  }
 }
 
 export function accountBalances(accounts: Account[], transactions: FinanceTransaction[]): Map<string, number> {
   const balances = new Map(accounts.map((account) => [account.id, account.openingBalanceMinor]));
+  const accountsById = new Map(accounts.map((account) => [account.id, account]));
   for (const transaction of transactions) {
     if (isTransferTransaction(transaction)) {
-      const from = accounts.find((account) => account.id === transaction.fromAccountId);
-      const to = accounts.find((account) => account.id === transaction.toAccountId);
+      const from = accountsById.get(transaction.fromAccountId);
+      const to = accountsById.get(transaction.toAccountId);
       if (!from || !to) continue;
-      balances.set(from.id, (balances.get(from.id) ?? 0) - transaction.sourceAmountMinor);
+      balances.set(from.id, safeAddMinor(balances.get(from.id) ?? 0, -transaction.sourceAmountMinor));
       const destinationChange = transaction.type === "card-payment" ? -transaction.destinationAmountMinor : transaction.destinationAmountMinor;
-      balances.set(to.id, (balances.get(to.id) ?? 0) + destinationChange);
+      balances.set(to.id, safeAddMinor(balances.get(to.id) ?? 0, destinationChange));
       continue;
     }
-    const account = accounts.find((candidate) => candidate.id === transaction.accountId);
+    const account = accountsById.get(transaction.accountId);
     if (!account) continue;
-    const direction = simpleBalanceDirection(transaction, account);
-    balances.set(account.id, (balances.get(account.id) ?? 0) + direction * transaction.amountMinor);
+    balances.set(account.id, safeAddMinor(balances.get(account.id) ?? 0, simpleBalanceDirection(transaction, account) * transaction.amountMinor));
   }
   return balances;
 }
@@ -83,7 +93,7 @@ export function netBalancesByCurrency(accounts: Account[], transactions: Finance
     if (account.archived) continue;
     const balance = balances.get(account.id) ?? 0;
     const contribution = account.kind === "credit-card" ? -balance : balance;
-    totals.set(account.currency, (totals.get(account.currency) ?? 0) + contribution);
+    totals.set(account.currency, safeAddMinor(totals.get(account.currency) ?? 0, contribution));
   }
   return totals;
 }
@@ -98,40 +108,30 @@ export function summarize(transactions: FinanceTransaction[], startDate: string,
   for (const transaction of transactions) {
     if (transaction.date < startDate || transaction.date > endDate || isTransferTransaction(transaction)) continue;
     const summary = result.get(transaction.currency) ?? { income: 0, expenses: 0, refunds: 0, net: 0 };
-    if (transaction.type === "income") summary.income += transaction.amountMinor;
-    if (transaction.type === "expense") summary.expenses += transaction.amountMinor;
-    if (transaction.type === "refund") summary.refunds += transaction.amountMinor;
-    summary.net = summary.income - summary.expenses + summary.refunds;
+    if (transaction.type === "income") summary.income = safeAddMinor(summary.income, transaction.amountMinor);
+    if (transaction.type === "expense") summary.expenses = safeAddMinor(summary.expenses, transaction.amountMinor);
+    if (transaction.type === "refund") summary.refunds = safeAddMinor(summary.refunds, transaction.amountMinor);
+    summary.net = safeAddMinor(safeAddMinor(summary.income, -summary.expenses), summary.refunds);
     result.set(transaction.currency, summary);
   }
   return result;
 }
 
 export function isValidLocalDate(value: string): boolean {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
-  const [year, month, day] = value.split("-").map(Number);
-  const parsed = new Date(year, month - 1, day);
-  return parsed.getFullYear() === year && parsed.getMonth() === month - 1 && parsed.getDate() === day;
+  return isCanonicalDate(value);
 }
 
 export function localDate(date = new Date()): string {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  return todayCanonical(date);
 }
 
 export function weekRange(now: Date, weekStartsOn: number): [string, string] {
-  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate());
-  const distance = (start.getDay() - weekStartsOn + 7) % 7;
-  start.setDate(start.getDate() - distance);
-  const end = new Date(start);
-  end.setDate(start.getDate() + 6);
-  return [localDate(start), localDate(end)];
+  return weekRangeForDate(todayCanonical(now), weekStartsOn);
 }
 
 export function monthRange(now: Date): [string, string] {
-  return [localDate(new Date(now.getFullYear(), now.getMonth(), 1)), localDate(new Date(now.getFullYear(), now.getMonth() + 1, 0))];
+  const canonical = todayCanonical(now);
+  return calendarMonthRange(canonical.slice(0, 7), "gregorian");
 }
 
 export function transactionLabel(type: TransactionType): string {

@@ -2,12 +2,17 @@ export type AccountKind = "cash" | "bank" | "credit-card";
 export type SimpleTransactionType = "expense" | "income" | "refund";
 export type TransferTransactionType = "transfer" | "card-payment";
 export type TransactionType = SimpleTransactionType | TransferTransactionType;
+export type CategoryType = "expense" | "income";
+export type CalendarSystem = "gregorian" | "persian";
+export type RecurrenceFrequency = "weekly" | "monthly" | "yearly";
+export type RecurringResolutionAction = "recorded" | "skipped";
 
 export interface FinanceSettings {
   locale: string;
   weekStartsOn: number;
   defaultCurrency: string;
   defaultAccountId?: string;
+  calendar: CalendarSystem;
 }
 
 export interface Account {
@@ -19,8 +24,59 @@ export interface Account {
   archived: boolean;
   lastFour?: string;
   creditLimitMinor?: number;
+  statementClosingDay?: number;
+  paymentDueDay?: number;
+  statementBalanceMinor?: number;
+  minimumPaymentMinor?: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export interface Category {
+  id: string;
+  name: string;
+  type: CategoryType;
+  archived: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface MonthlyBudget {
+  id: string;
+  categoryId: string;
+  currency: string;
+  calendar: CalendarSystem;
+  month: string;
+  amountMinor: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RecurringRule {
+  id: string;
+  type: CategoryType;
+  frequency: RecurrenceFrequency;
+  accountId: string;
+  amountMinor: number;
+  currency: string;
+  categoryId: string;
+  description: string;
+  anchorDueDate: string;
+  nextDueDate: string;
+  note?: string;
+  calendar: CalendarSystem;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface RecurringResolution {
+  id: string;
+  ruleId: string;
+  occurrenceDate: string;
+  action: RecurringResolutionAction;
+  transactionId?: string;
+  resolvedAt: string;
 }
 
 interface TransactionBase {
@@ -36,7 +92,7 @@ export interface SimpleTransaction extends TransactionBase {
   accountId: string;
   amountMinor: number;
   currency: string;
-  category?: string;
+  categoryId?: string;
   payee?: string;
 }
 
@@ -56,20 +112,33 @@ export interface FinanceData {
   schemaVersion: number;
   settings: FinanceSettings;
   accounts: Account[];
+  categories: Category[];
+  budgets: MonthlyBudget[];
+  recurringRules: RecurringRule[];
+  recurringResolutions: RecurringResolution[];
   transactions: FinanceTransaction[];
 }
 
 export const DEFAULT_DATA: FinanceData = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   settings: {
     locale: "en-US",
     weekStartsOn: 1,
-    defaultCurrency: "USD"
+    defaultCurrency: "USD",
+    calendar: "gregorian"
   },
   accounts: [],
+  categories: [],
+  budgets: [],
+  recurringRules: [],
+  recurringResolutions: [],
   transactions: []
 };
 
 export function isTransferTransaction(transaction: FinanceTransaction): transaction is TransferTransaction {
   return transaction.type === "transfer" || transaction.type === "card-payment";
+}
+
+export function categoryTypeForTransaction(type: SimpleTransactionType): CategoryType {
+  return type === "income" ? "income" : "expense";
 }
