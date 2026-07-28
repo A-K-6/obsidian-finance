@@ -24,7 +24,7 @@ import {
 import { cardPaymentReminders, creditCardUtilization, nextCardScheduleDate } from "@/domain/credit-cards";
 import { accountBalances, netBalancesByCurrency, summarize, transactionLabel } from "@/domain/finance";
 import { CURRENCIES, formatMoney, minorToInput, normalizeLocale, parseMoney, parseNonNegativeMoney } from "@/domain/money";
-import { recurringTransactionForOccurrence, upcomingOccurrences } from "@/domain/recurrence";
+import { actionableOccurrences, isRecurringRuleCompleted, recurringTransactionForOccurrence } from "@/domain/recurrence";
 import { FinanceStore } from "@/store/finance-store";
 import type {
   Account,
@@ -36,6 +36,7 @@ import type {
   MonthlyBudget,
   RecurrenceFrequency,
   RecurringRule,
+  ScheduledItemKind,
   TransactionType
 } from "@/types";
 import { categoryTypeForTransaction, isTransferTransaction } from "@/types";
@@ -107,6 +108,17 @@ function displayDate(canonical: string, calendar: CalendarSystem): string {
 
 function categoryName(categories: Category[], categoryId?: string): string {
   return categories.find((category) => category.id === categoryId)?.name ?? "Uncategorized";
+}
+
+function scheduledKindLabel(kind: ScheduledItemKind): string {
+  if (kind === "bill") return "Bill";
+  if (kind === "subscription") return "Subscription";
+  return "Recurring income";
+}
+
+function recurrenceUnit(frequency: RecurrenceFrequency, interval: number): string {
+  const unit = frequency === "weekly" ? "week" : frequency === "monthly" ? "month" : "year";
+  return `${unit}${interval === 1 ? "" : "s"}`;
 }
 
 abstract class FinanceView extends ItemView {
@@ -186,12 +198,12 @@ class DashboardView extends FinanceView {
     this.renderSummary(periodGrid, "This month", monthStart, monthEnd, summarize(data.transactions, monthStart, monthEnd), data.settings.locale, data.settings.calendar);
 
     const dueThrough = addCalendarPeriod(today, "weekly", 2);
-    const occurrences = upcomingOccurrences(data.recurringRules, data.recurringResolutions, today, dueThrough);
+    const occurrences = actionableOccurrences(data.recurringRules, data.recurringResolutions, today);
     const cardReminders = cardPaymentReminders(data.accounts, today, dueThrough, data.settings.calendar);
     if (occurrences.length > 0 || cardReminders.length > 0) {
       const planning = container.createDiv({ cls: "obsidian-finance-section" });
       planning.createEl("h3", { text: "Planning reminders" });
-      planning.createEl("p", { text: `${occurrences.filter((item) => item.due).length} recurring occurrence(s) due and ${cardReminders.length} card payment reminder(s). Nothing is posted automatically.` });
+      planning.createEl("p", { text: `${occurrences.length} scheduled item(s) and ${cardReminders.length} card payment reminder(s) need attention. Nothing is posted automatically.` });
       planning.createEl("button", { text: "Open planning" }).addEventListener("click", () => void this.plugin.activateView(PLANNING_VIEW));
     }
 
@@ -281,9 +293,9 @@ class PlanningView extends FinanceView {
     help.createEl("summary", { text: "What do these planning terms mean?" });
     help.createEl("p", { text: "Category: a reusable label for income or spending, such as groceries or salary. Categories keep similar transactions together." });
     help.createEl("p", { text: "Budget: a spending limit for one expense category, currency, calendar, and month. It compares the limit with recorded spending minus refunds." });
-    help.createEl("p", { text: "Recurring: a schedule for a repeated bill or income item. It never posts automatically; you must record or skip each occurrence." });
+    help.createEl("p", { text: "Scheduled item: a bill, subscription, or recurring income schedule. Only its next occurrence can require attention, and it never posts automatically." });
     help.createEl("p", { text: "Credit card: an account whose balance is the amount owed. The plugin tracks utilization, statement details, and reminders, but never initiates payments." });
-    help.createEl("p", { text: "Upcoming: future or overdue recurring occurrences and card dates within the planning window. They are reminders, not posted transactions." });
+    help.createEl("p", { text: "Needs attention: an overdue, due, or reminder-window scheduled occurrence plus card dates in the planning window. They are reminders, not posted transactions." });
     header.createEl("p", { text: `Dates use the ${data.settings.calendar === "persian" ? "Persian" : "Gregorian"} calendar. Nothing is posted automatically.`, cls: "obsidian-finance-muted" });
 
     const budgetsSection = container.createDiv({ cls: "obsidian-finance-section" });
@@ -323,24 +335,28 @@ class PlanningView extends FinanceView {
       const row = categoryList.createDiv({ cls: "obsidian-finance-compact-row" });
       row.createSpan({ text: `${category.name} — ${category.type}${category.archived ? " — archived" : ""}` });
       row.createEl("button", { text: "Edit" }).addEventListener("click", () => this.plugin.openCategoryModal(category));
-      if (!category.archived) row.createEl("button", { text: "Archive" }).addEventListener("click", () => new ConfirmModal(this.app, "Archive category?", "Existing transactions keep this category. Related recurring rules are paused.", "Archive category", async () => this.plugin.store.archiveCategory(category.id)).open());
+      if (!category.archived) row.createEl("button", { text: "Archive" }).addEventListener("click", () => new ConfirmModal(this.app, "Archive category?", "Existing transactions keep this category. Related scheduled items are paused.", "Archive category", async () => this.plugin.store.archiveCategory(category.id)).open());
     }
 
-    const recurringSection = container.createDiv({ cls: "obsidian-finance-section" });
-    const recurringHeader = recurringSection.createDiv({ cls: "obsidian-finance-header" });
-    recurringHeader.createEl("h3", { text: "Recurring" });
-    recurringHeader.createEl("button", { text: "Add recurring item" }).addEventListener("click", () => this.plugin.openRecurringRuleModal());
-    if (data.recurringRules.length === 0) recurringSection.createEl("p", { text: "No recurring rules." });
+    const scheduledSection = container.createDiv({ cls: "obsidian-finance-section" });
+    const scheduledHeader = scheduledSection.createDiv({ cls: "obsidian-finance-header" });
+    scheduledHeader.createEl("h3", { text: "Scheduled items" });
+    scheduledHeader.createEl("button", { text: "Add scheduled item" }).addEventListener("click", () => this.plugin.openRecurringRuleModal());
+    scheduledSection.createEl("p", { text: "Saving a scheduled item never records money. Record is always a separate manual confirmation.", cls: "obsidian-finance-muted" });
+    if (data.recurringRules.length === 0) scheduledSection.createEl("p", { text: "No scheduled items." });
     for (const rule of data.recurringRules) {
-      const row = recurringSection.createDiv({ cls: "obsidian-finance-card" });
+      const completed = isRecurringRuleCompleted(rule, data.recurringResolutions);
+      const status = completed ? "Completed" : rule.active ? "Active" : "Paused";
+      const row = scheduledSection.createDiv({ cls: "obsidian-finance-card" });
       row.createEl("h4", { text: rule.description });
-      row.createEl("p", { text: `${rule.type === "expense" ? "Expense" : "Income"} · ${rule.frequency} · ${formatMoney(rule.amountMinor, rule.currency, data.settings.locale)}` });
-      row.createEl("p", { text: `Next due ${displayDate(rule.nextDueDate, data.settings.calendar)} · ${rule.active ? "Active" : "Paused"}` });
+      row.createEl("p", { text: `${scheduledKindLabel(rule.kind)} · every ${rule.interval} ${recurrenceUnit(rule.frequency, rule.interval)} · ${formatMoney(rule.amountMinor, rule.currency, data.settings.locale)}` });
+      row.createEl("p", { text: `Next due ${displayDate(rule.nextDueDate, rule.calendar)} · ${status}` });
+      if (completed) row.createEl("p", { text: "Completed safely. Edit the end date or occurrence limit to continue this schedule.", cls: "obsidian-finance-muted" });
       const actions = row.createDiv({ cls: "obsidian-finance-actions" });
-      actions.createEl("button", { text: "Edit recurring item" }).addEventListener("click", () => this.plugin.openRecurringRuleModal(rule));
-      actions.createEl("button", { text: rule.active ? "Pause" : "Activate" }).addEventListener("click", () => {
+      actions.createEl("button", { text: "Edit" }).addEventListener("click", () => this.plugin.openRecurringRuleModal(rule));
+      if (!completed) actions.createEl("button", { text: rule.active ? "Pause" : "Resume" }).addEventListener("click", () => {
         void this.plugin.store.setRecurringRuleActive(rule.id, !rule.active).catch((error: unknown) => {
-          new Notice(error instanceof Error ? error.message : "Could not update recurring item");
+          new Notice(error instanceof Error ? error.message : "Could not update scheduled item");
         });
       });
     }
@@ -365,23 +381,25 @@ class PlanningView extends FinanceView {
     }
 
     const upcomingSection = container.createDiv({ cls: "obsidian-finance-section" });
-    upcomingSection.createEl("h3", { text: "Upcoming" });
+    upcomingSection.createEl("h3", { text: "Needs attention" });
     const through = addCalendarPeriod(today, "weekly", 8);
-    const occurrences = upcomingOccurrences(data.recurringRules, data.recurringResolutions, today, through);
+    const occurrences = actionableOccurrences(data.recurringRules, data.recurringResolutions, today);
     for (const occurrence of occurrences) {
       const rule = data.recurringRules.find((item) => item.id === occurrence.ruleId);
       if (!rule) continue;
       const row = upcomingSection.createDiv({ cls: "obsidian-finance-card" });
       row.createEl("h4", { text: rule.description });
-      row.createEl("p", { text: `${occurrence.due ? "Due" : "Upcoming"} ${displayDate(occurrence.date, data.settings.calendar)} · ${formatMoney(rule.amountMinor, rule.currency, data.settings.locale)}` });
-      row.createEl("p", { text: "Manual confirmation required; this is not posted yet.", cls: "obsidian-finance-muted" });
-      if (occurrence.date === rule.nextDueDate) {
-        const actions = row.createDiv({ cls: "obsidian-finance-actions" });
-        actions.createEl("button", { text: "Record", cls: "mod-cta" }).addEventListener("click", () => this.plugin.openRecurringOccurrence(rule, occurrence.date));
-        actions.createEl("button", { text: "Skip" }).addEventListener("click", () => new ConfirmModal(this.app, "Skip occurrence?", "Skipping records a resolution but creates no transaction.", "Skip occurrence", async () => this.plugin.store.resolveRecurringOccurrence(rule.id, occurrence.date, "skipped")).open());
-      } else {
-        row.createEl("p", { text: "Resolve the earlier occurrence first.", cls: "obsidian-finance-muted" });
-      }
+      row.createEl("p", { text: `${occurrence.due ? "Due" : "Reminder"} ${displayDate(occurrence.date, rule.calendar)} · ${formatMoney(rule.amountMinor, rule.currency, data.settings.locale)}` });
+      row.createEl("p", { text: "Manual confirmation required. Record opens a review form; no money is posted until save transaction.", cls: "obsidian-finance-muted" });
+      const actions = row.createDiv({ cls: "obsidian-finance-actions" });
+      actions.createEl("button", { text: "Record", cls: "mod-cta" }).addEventListener("click", () => this.plugin.openRecurringOccurrence(rule, occurrence.date));
+      actions.createEl("button", { text: "Skip" }).addEventListener("click", () => new ConfirmModal(this.app, "Skip occurrence?", "Skipping is logged and advances the schedule, but creates no transaction.", "Skip occurrence", async () => this.plugin.store.resolveRecurringOccurrence(rule.id, occurrence.date, "skipped")).open());
+      actions.createEl("button", { text: "Reschedule" }).addEventListener("click", () => this.plugin.openRescheduleModal(rule, occurrence.date));
+      actions.createEl("button", { text: "Pause" }).addEventListener("click", () => {
+        void this.plugin.store.setRecurringRuleActive(rule.id, false).catch((error: unknown) => {
+          new Notice(error instanceof Error ? error.message : "Could not pause scheduled item");
+        });
+      });
     }
     for (const reminder of cardPaymentReminders(data.accounts, today, through, data.settings.calendar)) {
       const account = data.accounts.find((item) => item.id === reminder.accountId);
@@ -391,7 +409,7 @@ class PlanningView extends FinanceView {
       row.createEl("p", { text: `${reminder.status === "overdue" ? "Overdue" : reminder.status === "due" ? "Due today" : "Upcoming"} ${displayDate(reminder.dueDate, data.settings.calendar)} · ${formatMoney(reminder.amountMinor, account.currency, data.settings.locale)}` });
       row.createEl("p", { text: "In-app reminder only. No payment is initiated.", cls: "obsidian-finance-muted" });
     }
-    if (occurrences.length === 0 && cardPaymentReminders(data.accounts, today, through, data.settings.calendar).length === 0) upcomingSection.createEl("p", { text: "Nothing due in the next eight weeks." });
+    if (occurrences.length === 0 && cardPaymentReminders(data.accounts, today, through, data.settings.calendar).length === 0) upcomingSection.createEl("p", { text: "No scheduled items need attention, and no card payment is due in the next eight weeks." });
   }
 }
 
@@ -552,8 +570,8 @@ class TransactionModal extends Modal {
   private render(): void {
     const accounts = this.plugin.store.snapshot().accounts;
     this.contentEl.empty();
-    this.contentEl.createEl("h2", { text: this.recurring ? "Confirm recurring transaction" : this.transaction ? "Edit transaction" : "Add transaction" });
-    if (this.recurring) this.contentEl.createEl("p", { text: "Review the prefilled transaction. It is created only after you select save transaction.", cls: "obsidian-finance-muted" });
+    this.contentEl.createEl("h2", { text: this.recurring ? "Confirm scheduled transaction" : this.transaction ? "Edit transaction" : "Add transaction" });
+    if (this.recurring) this.contentEl.createEl("p", { text: "Review the prefilled transaction. It is created only after you select save transaction; the schedule never posts automatically.", cls: "obsidian-finance-muted" });
     if (this.showAdvanced && !this.recurring) new Setting(this.contentEl).setName("Type").addDropdown((dropdown) => dropdown.addOptions(Object.fromEntries(TRANSACTION_TYPES.map((type) => [type, transactionLabel(type)]))).setValue(this.type).onChange((value) => { this.type = value as TransactionType; this.render(); }));
     if (this.showAdvanced) new Setting(this.contentEl).setName(`Date (${this.plugin.store.snapshot().settings.calendar === "persian" ? "Persian" : "Gregorian"} YYYY-MM-DD)`).addText((text) => text.setValue(this.date).onChange((value) => this.date = value));
     if (this.type === "transfer" || this.type === "card-payment") this.renderTransferFields(accounts);
@@ -731,55 +749,112 @@ class BudgetModal extends Modal {
 }
 
 class RecurringRuleModal extends Modal {
-  private type: CategoryType;
+  private kind: ScheduledItemKind;
   private frequency: RecurrenceFrequency;
+  private interval: string;
   private accountId: string;
   private amount: string;
   private categoryId: string;
   private description: string;
   private dueDate: string;
+  private endDate: string;
+  private occurrenceLimit: string;
+  private reminderLeadDays: string;
   private note: string;
   private calendar: CalendarSystem;
-  private active: boolean;
+  private advancedOpen = false;
   private isSaving = false;
 
   constructor(app: App, private readonly plugin: VaultFinancePlugin, private readonly rule?: RecurringRule) {
     super(app);
     const data = plugin.store.snapshot();
-    this.type = rule?.type ?? "expense";
+    this.kind = rule?.kind ?? "bill";
     this.frequency = rule?.frequency ?? "monthly";
+    this.interval = String(rule?.interval ?? 1);
     this.accountId = rule?.accountId ?? data.accounts.find((account) => !account.archived)?.id ?? "";
     this.amount = rule ? groupAmountInput(minorToInput(rule.amountMinor, rule.currency)) : "";
-    this.categoryId = rule?.categoryId ?? data.categories.find((category) => category.type === this.type && !category.archived)?.id ?? "";
+    const type = this.kind === "recurring-income" ? "income" : "expense";
+    this.categoryId = rule?.categoryId ?? data.categories.find((category) => category.type === type && !category.archived)?.id ?? "";
     this.description = rule?.description ?? "";
     this.calendar = rule?.calendar ?? data.settings.calendar;
     this.dueDate = formatCalendarDate(rule?.nextDueDate ?? todayCanonical(), this.calendar);
+    this.endDate = rule?.endDate ? formatCalendarDate(rule.endDate, this.calendar) : "";
+    this.occurrenceLimit = rule?.occurrenceLimit === undefined ? "" : String(rule.occurrenceLimit);
+    this.reminderLeadDays = rule?.reminderLeadDays === undefined ? "" : String(rule.reminderLeadDays);
     this.note = rule?.note ?? "";
-    this.active = rule?.active ?? true;
   }
 
   onOpen(): void { this.render(); }
 
   private render(): void {
     const data = this.plugin.store.snapshot();
+    const type: CategoryType = this.kind === "recurring-income" ? "income" : "expense";
     this.contentEl.empty();
-    this.contentEl.createEl("h2", { text: this.rule ? "Edit recurring item" : "Add recurring item" });
-    new Setting(this.contentEl).setName("Type").addDropdown((dropdown) => dropdown.addOptions({ expense: "Expense", income: "Income" }).setValue(this.type).onChange((value) => { this.type = value as CategoryType; this.categoryId = ""; this.render(); }));
-    new Setting(this.contentEl).setName("Frequency").addDropdown((dropdown) => dropdown.addOptions({ weekly: "Weekly", monthly: "Monthly", yearly: "Yearly" }).setValue(this.frequency).onChange((value) => this.frequency = value as RecurrenceFrequency));
-    const accounts = accountOptions(data.accounts, (account) => this.type !== "income" || account.kind !== "credit-card", new Set(this.rule ? [this.rule.accountId] : []));
+    this.contentEl.createEl("h2", { text: this.rule ? "Edit scheduled item" : "Add scheduled item" });
+    this.contentEl.createEl("p", { text: "Saving only changes this schedule. It never records money; record and save transaction are always separate manual confirmations.", cls: "obsidian-finance-muted" });
+    new Setting(this.contentEl).setName("Kind").addDropdown((dropdown) => dropdown
+      .addOptions({ bill: "Bill", subscription: "Subscription", "recurring-income": "Recurring income" })
+      .setValue(this.kind)
+      .onChange((value) => { this.kind = value as ScheduledItemKind; this.categoryId = ""; this.render(); }));
+    new Setting(this.contentEl).setName("Repeat").addDropdown((dropdown) => dropdown
+      .addOptions({ weekly: "Weekly", monthly: "Monthly", yearly: "Yearly" })
+      .setValue(this.frequency)
+      .onChange((value) => this.frequency = value as RecurrenceFrequency));
+    new Setting(this.contentEl).setName("Every").setDesc("Number of weeks, months, or years between due dates.").addText((text) => {
+      text.inputEl.type = "number";
+      text.inputEl.min = "1";
+      text.inputEl.step = "1";
+      text.setValue(this.interval).onChange((value) => this.interval = value);
+    });
+    const accounts = accountOptions(data.accounts, (account) => type !== "income" || account.kind !== "credit-card", new Set(this.rule ? [this.rule.accountId] : []));
     if (!accounts[this.accountId]) this.accountId = Object.keys(accounts)[0] ?? "";
     const account = data.accounts.find((item) => item.id === this.accountId);
     new Setting(this.contentEl).setName("Account").addDropdown((dropdown) => dropdown.addOptions(accounts).setValue(this.accountId).onChange((value) => { this.accountId = value; this.amount = ""; this.render(); }));
     new Setting(this.contentEl).setName(`Amount${account ? ` (${account.currency})` : ""}`).addText((text) => text.setValue(this.amount).onChange((value) => { const grouped = groupAmountInput(value); this.amount = grouped; if (grouped !== value) text.setValue(grouped); }));
-    new Setting(this.contentEl).setName("Category").addDropdown((dropdown) => dropdown.addOptions(categoryOptions(data.categories, this.type, this.rule?.categoryId)).setValue(this.categoryId).onChange((value) => this.categoryId = value));
+    new Setting(this.contentEl).setName("Category").addDropdown((dropdown) => dropdown.addOptions(categoryOptions(data.categories, type, this.rule?.categoryId)).setValue(this.categoryId).onChange((value) => this.categoryId = value));
     new Setting(this.contentEl).setName("Description").addText((text) => text.setValue(this.description).onChange((value) => this.description = value));
-    new Setting(this.contentEl).setName("Calendar").setDesc("Monthly and yearly arithmetic follows this calendar. Weekly always means seven days.").addDropdown((dropdown) => dropdown.addOptions({ gregorian: "Gregorian", persian: "Persian" }).setValue(this.calendar).onChange((value) => { const canonical = parseCalendarDate(this.dueDate, this.calendar); this.calendar = value as CalendarSystem; this.dueDate = formatCalendarDate(canonical, this.calendar); this.render(); }));
-    new Setting(this.contentEl).setName("Next and anchor due date").setDesc(`Use ${this.calendar === "persian" ? "Persian" : "Gregorian"} YYYY-MM-DD.`).addText((text) => text.setValue(this.dueDate).onChange((value) => this.dueDate = value));
-    new Setting(this.contentEl).setName("Note (optional)").addTextArea((text) => text.setValue(this.note).onChange((value) => this.note = value));
-    new Setting(this.contentEl).setName("Active").addToggle((toggle) => toggle.setValue(this.active).onChange((value) => this.active = value));
+    new Setting(this.contentEl)
+      .setName(this.rule ? "Next due date" : "First due date")
+      .setDesc(`${this.calendar === "persian" ? "Persian" : "Gregorian"} YYYY-MM-DD. ${this.rule ? "Changing this, Repeat, Every, or Calendar restarts the cadence from this date; other edits preserve the internal anchor." : "This date starts the cadence."}`)
+      .addText((text) => text.setValue(this.dueDate).onChange((value) => this.dueDate = value));
+
+    const advanced = this.contentEl.createEl("details", { cls: "obsidian-finance-card" });
+    advanced.open = this.advancedOpen;
+    advanced.addEventListener("toggle", () => this.advancedOpen = advanced.open);
+    advanced.createEl("summary", { text: "Advanced" });
+    new Setting(advanced).setName("Calendar").setDesc("Monthly and yearly arithmetic follows this calendar. Weekly always means seven days.").addDropdown((dropdown) => dropdown
+      .addOptions({ gregorian: "Gregorian", persian: "Persian" })
+      .setValue(this.calendar)
+      .onChange((value) => {
+        try {
+          const due = parseCalendarDate(this.dueDate, this.calendar);
+          const end = this.endDate.trim() ? parseCalendarDate(this.endDate, this.calendar) : undefined;
+          this.calendar = value as CalendarSystem;
+          this.dueDate = formatCalendarDate(due, this.calendar);
+          this.endDate = end ? formatCalendarDate(end, this.calendar) : "";
+          this.render();
+        } catch (error) {
+          new Notice(error instanceof Error ? error.message : "Could not change the schedule calendar");
+          this.render();
+        }
+      }));
+    new Setting(advanced).setName("Reminder lead days (optional)").setDesc("Show the next occurrence this many days before it is due. Blank means 0.").addText((text) => {
+      text.inputEl.type = "number";
+      text.inputEl.min = "0";
+      text.inputEl.step = "1";
+      text.setValue(this.reminderLeadDays).onChange((value) => this.reminderLeadDays = value);
+    });
+    new Setting(advanced).setName("End date (optional, inclusive)").setDesc(`${this.calendar === "persian" ? "Persian" : "Gregorian"} YYYY-MM-DD. An occurrence on this date can still be recorded or skipped.`).addText((text) => text.setValue(this.endDate).onChange((value) => this.endDate = value));
+    new Setting(advanced).setName("Stop after occurrences (optional)").setDesc("Counts recorded and skipped occurrences. Reschedules do not count.").addText((text) => {
+      text.inputEl.type = "number";
+      text.inputEl.min = "1";
+      text.inputEl.step = "1";
+      text.setValue(this.occurrenceLimit).onChange((value) => this.occurrenceLimit = value);
+    });
+    new Setting(advanced).setName("Note (optional)").addTextArea((text) => text.setValue(this.note).onChange((value) => this.note = value));
     const footer = this.contentEl.createDiv({ cls: "modal-button-container" });
     footer.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
-    footer.createEl("button", { text: "Save recurring item", cls: "mod-cta" }).addEventListener("click", () => void this.save());
+    footer.createEl("button", { text: "Save scheduled item", cls: "mod-cta" }).addEventListener("click", () => void this.save());
   }
 
   private async save(): Promise<void> {
@@ -788,21 +863,67 @@ class RecurringRuleModal extends Modal {
     try {
       const data = this.plugin.store.snapshot();
       const account = data.accounts.find((item) => item.id === this.accountId);
-      if (!account) throw new Error("Recurring account is required.");
+      if (!account) throw new Error("Scheduled item account is required.");
       const now = new Date().toISOString();
       const due = parseCalendarDate(this.dueDate, this.calendar);
+      const endDate = this.endDate.trim() ? parseCalendarDate(this.endDate, this.calendar) : undefined;
+      const occurrenceLimit = this.occurrenceLimit.trim() ? Number(this.occurrenceLimit) : undefined;
+      const reminderLeadDays = this.reminderLeadDays.trim() ? Number(this.reminderLeadDays) : 0;
+      const type: CategoryType = this.kind === "recurring-income" ? "income" : "expense";
       await this.plugin.store.upsertRecurringRule({
-        id: this.rule?.id ?? id(), type: this.type, frequency: this.frequency, accountId: account.id,
+        id: this.rule?.id ?? id(), kind: this.kind, type, frequency: this.frequency, interval: Number(this.interval), accountId: account.id,
         amountMinor: parseMoney(this.amount, account.currency), currency: account.currency, categoryId: this.categoryId,
         description: this.description.trim(), anchorDueDate: this.rule?.anchorDueDate ?? due, nextDueDate: due,
-        note: this.note.trim() || undefined, calendar: this.calendar, active: this.active,
+        endDate, occurrenceLimit, reminderLeadDays, note: this.note.trim() || undefined,
+        calendar: this.calendar, active: this.rule?.active ?? true,
         createdAt: this.rule?.createdAt ?? now, updatedAt: now
       });
-      new Notice("Recurring item saved");
+      new Notice("Scheduled item saved");
       this.close();
     } catch (error) {
       this.isSaving = false;
-      new Notice(error instanceof Error ? error.message : "Could not save recurring item");
+      new Notice(error instanceof Error ? error.message : "Could not save scheduled item");
+    }
+  }
+}
+
+class RescheduleModal extends Modal {
+  private date: string;
+  private isSaving = false;
+
+  constructor(
+    app: App,
+    private readonly plugin: VaultFinancePlugin,
+    private readonly rule: RecurringRule,
+    private readonly occurrenceDate: string
+  ) {
+    super(app);
+    this.date = formatCalendarDate(occurrenceDate, rule.calendar);
+  }
+
+  onOpen(): void {
+    this.contentEl.empty();
+    this.contentEl.createEl("h2", { text: "Reschedule occurrence" });
+    this.contentEl.createEl("p", { text: "No transaction is created. This decision is logged, and future cadence restarts from the new due date.", cls: "obsidian-finance-muted" });
+    new Setting(this.contentEl)
+      .setName(`New due date (${this.rule.calendar === "persian" ? "Persian" : "Gregorian"} YYYY-MM-DD)`)
+      .addText((text) => text.setValue(this.date).onChange((value) => this.date = value));
+    const footer = this.contentEl.createDiv({ cls: "modal-button-container" });
+    footer.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
+    footer.createEl("button", { text: "Reschedule", cls: "mod-cta" }).addEventListener("click", () => void this.save());
+  }
+
+  private async save(): Promise<void> {
+    if (this.isSaving) return;
+    this.isSaving = true;
+    try {
+      const date = parseCalendarDate(this.date, this.rule.calendar);
+      await this.plugin.store.rescheduleRecurringOccurrence(this.rule.id, this.occurrenceDate, date);
+      new Notice("Scheduled occurrence rescheduled");
+      this.close();
+    } catch (error) {
+      this.isSaving = false;
+      new Notice(error instanceof Error ? error.message : "Could not reschedule occurrence");
     }
   }
 }
@@ -843,7 +964,8 @@ class TransactionReferenceModal extends SuggestModal<FinanceReferenceSuggestion>
       if (suggestion.kind === "account") return ["account", suggestion.item.kind, suggestion.item.name, suggestion.item.currency].some((value) => value.toLowerCase().includes(normalized));
       if (suggestion.kind === "category") return ["category", suggestion.item.type, suggestion.item.name].some((value) => value.toLowerCase().includes(normalized));
       if (suggestion.kind === "budget") return ["budget", suggestion.item.month, suggestion.item.calendar, suggestion.item.currency, categoryName(data.categories, suggestion.item.categoryId)].some((value) => value.toLowerCase().includes(normalized));
-      return ["recurring", suggestion.item.type, suggestion.item.description, suggestion.item.frequency, suggestion.item.currency].some((value) => value.toLowerCase().includes(normalized));
+      return ["scheduled", "scheduled item", "recurring", scheduledKindLabel(suggestion.item.kind), suggestion.item.description, suggestion.item.frequency, suggestion.item.currency]
+        .some((value) => value.toLowerCase().includes(normalized));
     });
   }
 
@@ -867,8 +989,8 @@ class TransactionReferenceModal extends SuggestModal<FinanceReferenceSuggestion>
       element.createDiv({ text: `Budget · ${categoryName(data.categories, suggestion.item.categoryId)}` });
       element.createEl("small", { text: `${suggestion.item.month} · ${formatMoney(suggestion.item.amountMinor, suggestion.item.currency, data.settings.locale)}` });
     } else {
-      element.createDiv({ text: `Recurring · ${suggestion.item.description}` });
-      element.createEl("small", { text: `${suggestion.item.frequency} · next ${displayDate(suggestion.item.nextDueDate, suggestion.item.calendar)}` });
+      element.createDiv({ text: `Scheduled item · ${suggestion.item.description}` });
+      element.createEl("small", { text: `${scheduledKindLabel(suggestion.item.kind)} · every ${suggestion.item.interval} ${recurrenceUnit(suggestion.item.frequency, suggestion.item.interval)} · next ${displayDate(suggestion.item.nextDueDate, suggestion.item.calendar)}` });
     }
   }
 
@@ -998,6 +1120,7 @@ export default class VaultFinancePlugin extends Plugin {
   openCategoryModal(category?: Category): void { new CategoryModal(this.app, this, category).open(); }
   openBudgetModal(budget?: MonthlyBudget): void { new BudgetModal(this.app, this, budget).open(); }
   openRecurringRuleModal(rule?: RecurringRule): void { new RecurringRuleModal(this.app, this, rule).open(); }
+  openRescheduleModal(rule: RecurringRule, occurrenceDate: string): void { new RescheduleModal(this.app, this, rule, occurrenceDate).open(); }
 
   accountHasTransactions(accountId: string): boolean {
     const data = this.store.snapshot();
@@ -1012,9 +1135,9 @@ export default class VaultFinancePlugin extends Plugin {
     if (this.reminderDate === today) return;
     this.reminderDate = today;
     const data = this.store.snapshot();
-    const dueRecurring = upcomingOccurrences(data.recurringRules, data.recurringResolutions, today, today).filter((item) => item.due).length;
+    const dueRecurring = actionableOccurrences(data.recurringRules, data.recurringResolutions, today).filter((item) => item.due).length;
     const dueCards = cardPaymentReminders(data.accounts, today, today, data.settings.calendar).filter((item) => item.status !== "upcoming").length;
-    if (dueRecurring + dueCards > 0) new Notice(`Vault Finance: ${dueRecurring} recurring item(s) and ${dueCards} card payment(s) need attention. Open Planning to review. Nothing was posted or paid automatically.`, 10_000);
+    if (dueRecurring + dueCards > 0) new Notice(`Vault Finance: ${dueRecurring} scheduled item(s) and ${dueCards} card payment(s) need attention. Open Planning to review. Nothing was posted or paid automatically.`, 10_000);
   }
 
   renderTransactionReference(source: string, element: HTMLElement): void {
@@ -1077,12 +1200,12 @@ export default class VaultFinancePlugin extends Plugin {
 
     if (kind === "recurring") {
       const rule = data.recurringRules.find((item) => item.id === itemId);
-      if (!rule) { element.empty(); element.createDiv({ text: "Recurring reference not found.", cls: "obsidian-finance-muted" }); return; }
-      heading.createEl("strong", { text: "Recurring" });
-      heading.createSpan({ text: rule.active ? "Active" : "Paused" });
+      if (!rule) { element.empty(); element.createDiv({ text: "Scheduled item reference not found.", cls: "obsidian-finance-muted" }); return; }
+      heading.createEl("strong", { text: "Scheduled item" });
+      heading.createSpan({ text: isRecurringRuleCompleted(rule, data.recurringResolutions) ? "Completed" : rule.active ? "Active" : "Paused" });
       details.createEl("strong", { text: formatMoney(rule.amountMinor, rule.currency, data.settings.locale) });
-      details.createSpan({ text: `${rule.description} · ${rule.frequency} · next ${displayDate(rule.nextDueDate, rule.calendar)}` });
-      addIconButton(heading, "pencil", "Edit recurring item", () => this.openRecurringRuleModal(rule));
+      details.createSpan({ text: `${rule.description} · ${scheduledKindLabel(rule.kind)} · every ${rule.interval} ${recurrenceUnit(rule.frequency, rule.interval)} · next ${displayDate(rule.nextDueDate, rule.calendar)}` });
+      addIconButton(heading, "pencil", "Edit scheduled item", () => this.openRecurringRuleModal(rule));
       return;
     }
 

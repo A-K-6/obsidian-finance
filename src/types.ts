@@ -5,7 +5,8 @@ export type TransactionType = SimpleTransactionType | TransferTransactionType;
 export type CategoryType = "expense" | "income";
 export type CalendarSystem = "gregorian" | "persian";
 export type RecurrenceFrequency = "weekly" | "monthly" | "yearly";
-export type RecurringResolutionAction = "recorded" | "skipped";
+export type ScheduledItemKind = "bill" | "subscription" | "recurring-income";
+export type RecurringResolutionAction = "recorded" | "skipped" | "rescheduled";
 
 export interface FinanceSettings {
   locale: string;
@@ -55,8 +56,10 @@ export interface MonthlyBudget {
 
 export interface RecurringRule {
   id: string;
+  kind: ScheduledItemKind;
   type: CategoryType;
   frequency: RecurrenceFrequency;
+  interval: number;
   accountId: string;
   amountMinor: number;
   currency: string;
@@ -64,6 +67,9 @@ export interface RecurringRule {
   description: string;
   anchorDueDate: string;
   nextDueDate: string;
+  endDate?: string;
+  occurrenceLimit?: number;
+  reminderLeadDays: number;
   note?: string;
   calendar: CalendarSystem;
   active: boolean;
@@ -77,6 +83,7 @@ export interface RecurringResolution {
   occurrenceDate: string;
   action: RecurringResolutionAction;
   transactionId?: string;
+  rescheduledToDate?: string;
   resolvedAt: string;
 }
 
@@ -121,7 +128,7 @@ export interface FinanceData {
 }
 
 export const DEFAULT_DATA: FinanceData = {
-  schemaVersion: 2,
+  schemaVersion: 3,
   settings: {
     locale: "en-US",
     weekStartsOn: 1,

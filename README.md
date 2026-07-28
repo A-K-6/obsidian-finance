@@ -1,6 +1,6 @@
 # Vault Finance
 
-Vault Finance is a private, local-first personal finance manager for [Obsidian](https://obsidian.md). Version 2 adds reusable categories, calendar-aware budgets and recurring planning, and fuller credit-card management while preserving the account and transaction model from version 1.
+Vault Finance is a private, local-first personal finance manager for [Obsidian](https://obsidian.md). Version 3 adds a simpler Scheduled items model for bills, subscriptions, and recurring income while preserving all version 1 and 2 finance data.
 
 ## Highlights
 
@@ -8,7 +8,7 @@ Vault Finance is a private, local-first personal finance manager for [Obsidian](
 - Expenses, income, refunds, transfers, and card payments
 - Reusable typed expense and income categories
 - Monthly expense-category budgets, always separated by currency
-- Weekly, monthly, and yearly recurring planning with manual confirmation
+- Scheduled bills, subscriptions, and recurring income with flexible intervals and manual confirmation
 - Gregorian and Persian calendar display and arithmetic
 - Credit-card statements, minimum payments, utilization, and reminders
 - Right-sidebar dashboard plus a normal Planning tab
@@ -24,7 +24,7 @@ The **Finance dashboard** remains in Obsidian's right sidebar. It shows current 
 Open **Vault Finance: Open planning** or select **Planning** on the dashboard for a normal tab with clearly separated sections:
 
 - **Budgets:** current calendar-month Budget, Spent, Remaining, and textual **Overspent** or **Within budget** status.
-- **Recurring:** recurring rule management and active/paused status.
+- **Scheduled items:** bill, subscription, and recurring-income schedules with Record, Skip, Reschedule, Pause, Resume, and Edit actions.
 - **Credit cards:** current amount owed, utilization, statement balance, minimum payment, and schedule details.
 - **Upcoming:** due and upcoming recurring occurrences plus card payment reminders.
 
@@ -66,27 +66,27 @@ A budget identifies all of the following explicitly:
 
 Spent is calculated as same-category expenses minus same-category refunds within the exact calendar-month range. Transactions in another category, currency, or month are excluded. Vault Finance never combines currencies and does not infer exchange rates.
 
-## Recurring items and manual confirmation
+## Scheduled items and manual confirmation
 
-Recurring expense and income rules include:
+Scheduled bills, subscriptions, and recurring-income rules include:
 
-- Weekly, monthly, or yearly frequency
+- Every N weeks, months, or years
 - Account, amount, and currency
 - Typed category and description
 - Canonical anchor and next due dates
-- Optional note
-- Calendar and active status
+- Optional note, inclusive end date, occurrence limit, and reminder lead days
+- Gregorian or Persian calendar and paused status
 
 Weekly recurrence is always seven absolute calendar days. Monthly and yearly recurrence follows the rule's Gregorian or Persian calendar and clamps month ends while retaining the original anchor for later occurrences.
 
-Recurring items are planning rules, not automatic transactions. To record an occurrence:
+Scheduled items are planning rules, not automatic transactions. Planning shows only the next actionable occurrence once it is due, overdue, or inside its reminder lead time. To record an occurrence:
 
 1. Open Planning.
 2. Select **Record** on an upcoming or due occurrence.
 3. Review the prefilled confirmation transaction modal.
 4. Select **Save transaction**.
 
-No transaction exists before that explicit Save. Recording the transaction and resolving the occurrence are persisted atomically so the same occurrence cannot be posted twice. **Skip** requires confirmation, creates no transaction, and records the occurrence as skipped to prevent repeated prompts.
+No transaction exists before that explicit Save. Recording the transaction and resolving the occurrence are persisted atomically so the same occurrence cannot be posted twice. **Skip** requires confirmation and creates no transaction. **Reschedule** logs the old date and resets future cadence from the selected date. **Pause** preserves the next due date; **Resume** restores reminders. None of these actions posts money automatically.
 
 ## Calendars and stored dates
 
@@ -157,19 +157,21 @@ After Obsidian's layout is ready, Vault Finance can show one concise in-app summ
 
 These are Obsidian in-app notices only. Vault Finance does not claim background delivery, system notifications, network delivery, payment execution, or automatic posting.
 
-## Version 1 migration
+## Data migration
 
-On first successful version 2 load, schema version 1 data is validated and migrated to schema version 2:
+Schema upgrades run sequentially and are saved only after complete validation. Version 1 data first receives the lossless category migration, then version 2 scheduled rules migrate to schema version 3:
 
 - Account and transaction IDs are unchanged.
 - Dates, timestamps, currencies, and integer minor amounts are preserved exactly.
 - Existing free-text categories deterministically become typed category records.
 - Expense and refund text share an expense category; income text becomes an income category.
 - Transactions receive `categoryId` links, while original category text is retained in migrated persisted data for losslessness.
-- New budgets, recurring rules, and resolutions start empty.
+- New budgets, scheduled rules, and resolutions start empty for version 1 data.
+- Version 2 recurring rules keep their IDs, dates, amounts, currencies, notes, active state, resolutions, and transaction links.
+- Version 2 expense rules become bills, income rules become recurring income, and both receive interval 1 and zero reminder lead days.
 - The initial calendar is Gregorian, matching version 1 behavior.
 
-The complete migrated document is saved before it becomes the active in-memory state. If that persistence fails, Vault Finance does not commit the migrated state. Loading valid version 2 data is idempotent and does not rewrite it. Unsupported future schema versions fail without saving, protecting data from an older plugin version.
+The complete migrated document is saved before it becomes the active in-memory state. If that persistence fails, Vault Finance does not commit the migrated state. Loading valid version 3 data is idempotent and does not rewrite it. Unsupported future schema versions fail without saving, protecting data from an older plugin version.
 
 Back up your vault before any major plugin upgrade.
 
@@ -227,7 +229,7 @@ https://github.com/A-K-6/obsidian-finance
 
 - Minimum Obsidian version: **1.7.2**
 - Desktop-only: **No**
-- Current plugin version: **2.1.0**
+- Current plugin version: **3.0.0**
 
 ## Deliberate limitations
 

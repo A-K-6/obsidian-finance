@@ -22,7 +22,7 @@ describe("calendar domain", () => {
   });
 
   it("keeps recurrence anchored after a clamped month", () => {
-    const rule = { anchorDueDate: "2026-01-31", frequency: "monthly" as const, calendar: "gregorian" as const };
+    const rule = { anchorDueDate: "2026-01-31", frequency: "monthly" as const, interval: 1, calendar: "gregorian" as const };
     expect(nextOccurrenceDate(rule, "2026-02-28")).toBe("2026-03-31");
   });
 

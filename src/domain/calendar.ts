@@ -86,8 +86,13 @@ export function calendarMonthRange(monthKey: string, system: CalendarSystem): [s
   return [calendarDateToCanonical(start), calendarDateToCanonical(endOfMonth(start))];
 }
 
+export function addCanonicalDays(canonical: string, days: number): string {
+  if (!Number.isSafeInteger(days)) throw new Error("Day interval must be a safe whole number.");
+  return parseDate(canonical).add({ days }).toString();
+}
+
 export function addCalendarPeriod(canonical: string, frequency: RecurrenceFrequency, count = 1, system: CalendarSystem = "gregorian"): string {
-  if (!Number.isInteger(count)) throw new Error("Recurrence interval must be a whole number.");
+  if (!Number.isSafeInteger(count)) throw new Error("Recurrence interval must be a safe whole number.");
   const gregorian = parseDate(canonical);
   if (frequency === "weekly") return gregorian.add({ days: 7 * count }).toString();
   const date = toCalendar(gregorian, calendarFor(system));

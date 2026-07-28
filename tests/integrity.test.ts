@@ -12,8 +12,9 @@ const category: Category = {
   id: "rent", name: "Rent", type: "expense", archived: false, createdAt: timestamp, updatedAt: timestamp
 };
 const rule: RecurringRule = {
-  id: "monthly-rent", type: "expense", frequency: "monthly", accountId: "bank", amountMinor: 100_00,
-  currency: "USD", categoryId: "rent", description: "Rent", anchorDueDate: "2026-07-01", nextDueDate: "2026-07-01",
+  id: "monthly-rent", kind: "bill", type: "expense", frequency: "monthly", interval: 1,
+  accountId: "bank", amountMinor: 100_00, currency: "USD", categoryId: "rent", description: "Rent",
+  anchorDueDate: "2026-07-01", nextDueDate: "2026-07-01", reminderLeadDays: 0,
   calendar: "gregorian", active: true, createdAt: timestamp, updatedAt: timestamp
 };
 const transaction: SimpleTransaction = {

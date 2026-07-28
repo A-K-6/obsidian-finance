@@ -1,9 +1,9 @@
 {
   "id": "vault-finance",
   "name": "Vault Finance",
-  "version": "2.1.0",
+  "version": "3.0.0",
   "minAppVersion": "1.7.2",
-  "description": "Plan budgets, recurring items, credit cards, and multi-currency transactions locally.",
+  "description": "Plan budgets, scheduled items, credit cards, and multi-currency transactions locally.",
   "author": "Jabama",
   "authorUrl": "https://github.com/A-K-6",
   "isDesktopOnly": false

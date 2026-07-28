@@ -2,7 +2,7 @@ import { isCanonicalDate } from "@/domain/calendar";
 import { validateBudget } from "@/domain/budgets";
 import { validateAccount, validateTransaction } from "@/domain/finance";
 import { normalizeLocale } from "@/domain/money";
-import { nextOccurrenceDate, recurringOccurrenceKey, validateRecurringRule } from "@/domain/recurrence";
+import { isRecurringRuleCompleted, nextOccurrenceDate, recurringOccurrenceKey, validateRecurringRule } from "@/domain/recurrence";
 import { migrateSchema } from "@/store/migrations";
 import type {
   Account,
@@ -50,13 +50,13 @@ export class FinanceStore {
     }
     if (!isRecord(raw)) throw new Error("Finance data is not a valid object. Restore data.json from a backup.");
     const sourceVersion = raw.schemaVersion ?? 1;
-    if (typeof sourceVersion !== "number" || sourceVersion < 1 || sourceVersion > 2) {
+    if (typeof sourceVersion !== "number" || sourceVersion < 1 || sourceVersion > 3) {
       const versionLabel = typeof sourceVersion === "string" || typeof sourceVersion === "number" ? sourceVersion : "unknown";
       throw new Error(`Finance data uses unsupported schema version ${versionLabel}. Update the plugin before continuing.`);
     }
 
     const migration = migrateSchema(raw);
-    if (!isRecord(migration.data) || migration.data.schemaVersion !== 2) throw new Error("Finance data could not be migrated to schema version 2.");
+    if (!isRecord(migration.data) || migration.data.schemaVersion !== 3) throw new Error("Finance data could not be migrated to schema version 3.");
     const decoded = this.decodeData(migration.data);
     if (migration.migrated) await this.saveData(clone(decoded));
     this.data = decoded;
@@ -160,18 +160,34 @@ export class FinanceStore {
 
   async upsertRecurringRule(rule: RecurringRule): Promise<void> {
     await this.mutate((draft) => {
-      validateRecurringRule(rule, draft.accounts, draft.categories);
-      const category = rule.categoryId ? draft.categories.find((item) => item.id === rule.categoryId) : undefined;
-      if (rule.active && category?.archived) throw new Error("Active recurring items cannot use an archived category.");
       const existing = draft.recurringRules.find((item) => item.id === rule.id);
-      const hasRecordedOccurrences = draft.recurringResolutions.some((resolution) => resolution.ruleId === rule.id && resolution.action === "recorded");
-      if (existing && hasRecordedOccurrences
-        && (existing.type !== rule.type || existing.accountId !== rule.accountId || existing.currency !== rule.currency)) {
-        throw new Error("A recurring item's type, account, and currency cannot change after an occurrence has been recorded.");
+      const scheduleChanged = existing !== undefined && (existing.nextDueDate !== rule.nextDueDate
+        || existing.frequency !== rule.frequency || existing.interval !== rule.interval || existing.calendar !== rule.calendar);
+      const normalized = clone(rule);
+      if (existing) {
+        normalized.active = existing.active;
+        if (scheduleChanged) normalized.anchorDueDate = normalized.nextDueDate;
+        else {
+          normalized.anchorDueDate = existing.anchorDueDate;
+          normalized.nextDueDate = existing.nextDueDate;
+        }
+      } else {
+        normalized.active = true;
+        normalized.anchorDueDate = normalized.nextDueDate;
       }
-      const index = draft.recurringRules.findIndex((item) => item.id === rule.id);
-      if (index >= 0) draft.recurringRules[index] = clone(rule);
-      else draft.recurringRules.push(clone(rule));
+      validateRecurringRule(normalized, draft.accounts, draft.categories);
+      const hasRecordedOccurrences = draft.recurringResolutions.some((resolution) => resolution.ruleId === normalized.id && resolution.action === "recorded");
+      if (existing && hasRecordedOccurrences
+        && (existing.type !== normalized.type || existing.accountId !== normalized.accountId || existing.currency !== normalized.currency)) {
+        throw new Error("A scheduled item's type, account, and currency cannot change after an occurrence has been recorded.");
+      }
+      if (scheduleChanged && draft.recurringResolutions.some((resolution) => recurringOccurrenceKey(resolution.ruleId, resolution.occurrenceDate)
+        === recurringOccurrenceKey(normalized.id, normalized.nextDueDate))) {
+        throw new Error("That next due date was already used by this scheduled item.");
+      }
+      const index = draft.recurringRules.findIndex((item) => item.id === normalized.id);
+      if (index >= 0) draft.recurringRules[index] = normalized;
+      else draft.recurringRules.push(normalized);
     });
   }
 
@@ -179,10 +195,10 @@ export class FinanceStore {
     await this.mutate((draft) => {
       const rule = draft.recurringRules.find((item) => item.id === ruleId);
       if (!rule) return;
-      if (active) validateRecurringRule({ ...rule, active }, draft.accounts, draft.categories);
+      if (active && isRecurringRuleCompleted(rule, draft.recurringResolutions)) {
+        throw new Error("This scheduled item is completed. Edit its end date or occurrence limit before resuming it.");
+      }
       rule.active = active;
-      const category = rule.categoryId ? draft.categories.find((item) => item.id === rule.categoryId) : undefined;
-      if (active && category?.archived) throw new Error("Active recurring items cannot use an archived category.");
       validateRecurringRule(rule, draft.accounts, draft.categories);
       rule.updatedAt = new Date().toISOString();
     });
@@ -191,22 +207,28 @@ export class FinanceStore {
   async resolveRecurringOccurrence(
     ruleId: string,
     occurrenceDate: string,
-    action: RecurringResolutionAction,
+    action: Exclude<RecurringResolutionAction, "rescheduled">,
     transaction?: FinanceTransaction
   ): Promise<void> {
     await this.mutate((draft) => {
       const rule = draft.recurringRules.find((item) => item.id === ruleId);
-      if (!rule) throw new Error("Recurring rule was not found.");
-      if (!isCanonicalDate(occurrenceDate) || occurrenceDate !== rule.nextDueDate) throw new Error("This recurring occurrence is no longer current.");
-      if (draft.recurringResolutions.some((item) => recurringOccurrenceKey(item.ruleId, item.occurrenceDate) === recurringOccurrenceKey(ruleId, occurrenceDate))) {
-        throw new Error("This recurring occurrence has already been resolved.");
+      if (!rule) throw new Error("Scheduled item was not found.");
+      if (!rule.active || isRecurringRuleCompleted(rule, draft.recurringResolutions)) throw new Error("This scheduled item is paused or completed.");
+      if (!isCanonicalDate(occurrenceDate) || occurrenceDate !== rule.nextDueDate) throw new Error("This scheduled occurrence is no longer current.");
+      const occurrenceKey = recurringOccurrenceKey(ruleId, occurrenceDate);
+      if (draft.recurringResolutions.some((item) => recurringOccurrenceKey(item.ruleId, item.occurrenceDate) === occurrenceKey)) {
+        throw new Error("This scheduled occurrence has already been resolved.");
+      }
+      const nextDate = nextOccurrenceDate(rule, occurrenceDate);
+      if (draft.recurringResolutions.some((item) => recurringOccurrenceKey(item.ruleId, item.occurrenceDate) === recurringOccurrenceKey(ruleId, nextDate))) {
+        throw new Error("The next scheduled date was already used. Edit the schedule before resolving this occurrence.");
       }
       if (action === "recorded") {
         if (!transaction || isTransferTransaction(transaction)) throw new Error("A transaction is required to record this occurrence.");
         if (transaction.date !== occurrenceDate) throw new Error("Recorded transaction date must match the occurrence date.");
         if (draft.transactions.some((item) => item.id === transaction.id)) throw new Error("Transaction ID already exists.");
         if (transaction.type !== rule.type || transaction.accountId !== rule.accountId || transaction.currency !== rule.currency) {
-          throw new Error("The recorded transaction type, account, and currency must match the recurring item.");
+          throw new Error("The recorded transaction type, account, and currency must match the scheduled item.");
         }
         validateTransaction(transaction, draft.accounts, new Set(), draft.categories);
         draft.transactions.push(clone(transaction));
@@ -222,8 +244,37 @@ export class FinanceStore {
         transactionId: action === "recorded" ? transaction?.id : undefined,
         resolvedAt
       });
-      rule.nextDueDate = nextOccurrenceDate(rule, occurrenceDate);
+      rule.nextDueDate = nextDate;
       rule.updatedAt = resolvedAt;
+    });
+  }
+
+  async rescheduleRecurringOccurrence(ruleId: string, occurrenceDate: string, rescheduledToDate: string): Promise<void> {
+    await this.mutate((draft) => {
+      const rule = draft.recurringRules.find((item) => item.id === ruleId);
+      if (!rule) throw new Error("Scheduled item was not found.");
+      if (!rule.active || isRecurringRuleCompleted(rule, draft.recurringResolutions)) throw new Error("This scheduled item is paused or completed.");
+      if (!isCanonicalDate(occurrenceDate) || occurrenceDate !== rule.nextDueDate) throw new Error("This scheduled occurrence is no longer current.");
+      if (!isCanonicalDate(rescheduledToDate)) throw new Error("Rescheduled date is invalid.");
+      if (rescheduledToDate === occurrenceDate) throw new Error("Choose a different date to reschedule this occurrence.");
+      const occurrenceKey = recurringOccurrenceKey(ruleId, occurrenceDate);
+      const targetKey = recurringOccurrenceKey(ruleId, rescheduledToDate);
+      if (draft.recurringResolutions.some((item) => {
+        const key = recurringOccurrenceKey(item.ruleId, item.occurrenceDate);
+        return key === occurrenceKey || key === targetKey;
+      })) throw new Error("This scheduled date has already been resolved or rescheduled.");
+      const updated = { ...rule, anchorDueDate: rescheduledToDate, nextDueDate: rescheduledToDate };
+      validateRecurringRule(updated, draft.accounts, draft.categories);
+      const resolvedAt = new Date().toISOString();
+      draft.recurringResolutions.push({
+        id: `resolution-${ruleId}-${occurrenceDate}`,
+        ruleId,
+        occurrenceDate,
+        action: "rescheduled",
+        rescheduledToDate,
+        resolvedAt
+      });
+      Object.assign(rule, updated, { updatedAt: resolvedAt });
     });
   }
 
@@ -286,7 +337,7 @@ export class FinanceStore {
     const resolutionKeys = recurringResolutions.map((item) => recurringOccurrenceKey(item.ruleId, item.occurrenceDate));
     if (new Set(resolutionKeys).size !== resolutionKeys.length) throw new Error("Finance data contains duplicate recurring occurrence resolutions.");
     return {
-      schemaVersion: 2,
+      schemaVersion: 3,
       settings: this.decodeSettings(raw.settings, accounts),
       accounts,
       categories,
@@ -351,23 +402,30 @@ export class FinanceStore {
     if (!isRecord(value)) throw new Error(`Recurring rule ${index + 1} is invalid.`);
     const rule = value as unknown as RecurringRule;
     if (typeof rule.createdAt !== "string" || typeof rule.updatedAt !== "string" || typeof rule.active !== "boolean"
-      || !( ["weekly", "monthly", "yearly"] as const).includes(rule.frequency)) throw new Error(`Recurring rule ${index + 1} has invalid metadata.`);
+      || !( ["weekly", "monthly", "yearly"] as const).includes(rule.frequency)
+      || !( ["bill", "subscription", "recurring-income"] as const).includes(rule.kind)) throw new Error(`Scheduled item ${index + 1} has invalid metadata.`);
     try { validateRecurringRule(rule, accounts, categories); }
     catch (error) { throw new Error(`Recurring rule ${index + 1} is invalid: ${error instanceof Error ? error.message : "invalid rule"}`); }
     return clone(rule);
   }
 
   private decodeResolution(value: unknown, index: number, rules: RecurringRule[], transactions: FinanceTransaction[]): RecurringResolution {
-    if (!isRecord(value)) throw new Error(`Recurring resolution ${index + 1} is invalid.`);
+    if (!isRecord(value)) throw new Error(`Scheduled resolution ${index + 1} is invalid.`);
     const resolution = value as unknown as RecurringResolution;
     if (!resolution.id || !rules.some((rule) => rule.id === resolution.ruleId) || !isCanonicalDate(resolution.occurrenceDate)
-      || (resolution.action !== "recorded" && resolution.action !== "skipped") || typeof resolution.resolvedAt !== "string") {
-      throw new Error(`Recurring resolution ${index + 1} is invalid.`);
+      || !( ["recorded", "skipped", "rescheduled"] as const).includes(resolution.action) || typeof resolution.resolvedAt !== "string") {
+      throw new Error(`Scheduled resolution ${index + 1} is invalid.`);
     }
     if (resolution.action === "recorded" && (!resolution.transactionId || !transactions.some((item) => item.id === resolution.transactionId))) {
-      throw new Error(`Recurring resolution ${index + 1} is missing its transaction.`);
+      throw new Error(`Scheduled resolution ${index + 1} is missing its transaction.`);
     }
-    if (resolution.action === "skipped" && resolution.transactionId !== undefined) throw new Error(`Recurring resolution ${index + 1} cannot reference a transaction.`);
+    if (resolution.action !== "recorded" && resolution.transactionId !== undefined) throw new Error(`Scheduled resolution ${index + 1} cannot reference a transaction.`);
+    if (resolution.action === "rescheduled" && (!resolution.rescheduledToDate || !isCanonicalDate(resolution.rescheduledToDate))) {
+      throw new Error(`Scheduled resolution ${index + 1} is missing its rescheduled date.`);
+    }
+    if (resolution.action !== "rescheduled" && resolution.rescheduledToDate !== undefined) {
+      throw new Error(`Scheduled resolution ${index + 1} cannot include a rescheduled date.`);
+    }
     return clone(resolution);
   }
 
