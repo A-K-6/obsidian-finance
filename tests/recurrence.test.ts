@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { addCalendarPeriod } from "@/domain/calendar";
 import { recurringTransactionForOccurrence, upcomingOccurrences } from "@/domain/recurrence";
 import { FinanceStore } from "@/store/finance-store";
-import type { Account, Category, RecurringRule } from "@/types";
+import type { Account, Category, FinanceData, RecurringRule } from "@/types";
 
 const timestamp = "2026-07-01T00:00:00.000Z";
 const account: Account = { id: "bank", name: "Bank", kind: "bank", currency: "USD", openingBalanceMinor: 0, archived: false, createdAt: timestamp, updatedAt: timestamp };
@@ -13,7 +13,7 @@ const rule: RecurringRule = {
   calendar: "gregorian", active: true, createdAt: timestamp, updatedAt: timestamp
 };
 
-async function preparedStore(save = vi.fn(async () => undefined)): Promise<{ store: FinanceStore; save: typeof save }> {
+async function preparedStore(save = vi.fn(async (_data: FinanceData) => undefined)): Promise<{ store: FinanceStore; save: typeof save }> {
   const store = new FinanceStore(save);
   await store.load(null);
   await store.upsertAccount(account);
@@ -60,7 +60,7 @@ describe("recurring rules", () => {
 
   it("keeps paused rules loadable after their account is archived", async () => {
     let persisted: unknown;
-    const { store } = await preparedStore(vi.fn(async (data) => { persisted = data; }));
+    const { store } = await preparedStore(vi.fn(async (data: FinanceData) => { persisted = data; }));
     await store.archiveAccount(account.id);
     expect(store.snapshot().recurringRules[0]?.active).toBe(false);
     const reloaded = new FinanceStore(async () => undefined);

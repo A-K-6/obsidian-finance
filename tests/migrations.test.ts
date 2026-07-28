@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { FinanceStore } from "@/store/finance-store";
+import type { FinanceData } from "@/types";
 
 const timestamp = "2026-07-01T00:00:00.000Z";
 const v1 = {
@@ -15,7 +16,7 @@ const v1 = {
 
 describe("schema v1 to v2 migration", () => {
   it("preserves financial records exactly and creates deterministic typed categories", async () => {
-    const save = vi.fn(async () => undefined);
+    const save = vi.fn(async (_data: FinanceData) => undefined);
     const store = new FinanceStore(save);
     await store.load(v1);
     const data = store.snapshot();
