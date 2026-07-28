@@ -84,10 +84,16 @@ export class FinanceStore {
   async upsertAccount(account: Account): Promise<void> {
     await this.mutate((draft) => {
       validateAccount(account);
+      if (account.statementDueDate !== undefined && !isCanonicalDate(account.statementDueDate)) throw new Error("Statement due date is invalid.");
       const existing = draft.accounts.find((item) => item.id === account.id);
-      if (existing && draft.transactions.some((transaction) => transactionAccountIds(transaction).includes(account.id))
-        && (existing.currency !== account.currency || existing.kind !== account.kind)) {
-        throw new Error("Account type and currency cannot change after transactions have been recorded.");
+      const hasDependents = draft.transactions.some((transaction) => transactionAccountIds(transaction).includes(account.id))
+        || draft.recurringRules.some((rule) => rule.accountId === account.id);
+      if (existing && hasDependents && (existing.currency !== account.currency || existing.kind !== account.kind)) {
+        throw new Error("Account type and currency cannot change after transactions or recurring items have been recorded.");
+      }
+      if (existing && existing.currency !== account.currency
+        && (account.statementBalanceMinor !== undefined || account.minimumPaymentMinor !== undefined)) {
+        throw new Error("Clear the statement balance and minimum payment before changing card currency.");
       }
       const index = draft.accounts.findIndex((item) => item.id === account.id);
       if (index >= 0) draft.accounts[index] = clone(account);
@@ -151,6 +157,8 @@ export class FinanceStore {
   async upsertRecurringRule(rule: RecurringRule): Promise<void> {
     await this.mutate((draft) => {
       validateRecurringRule(rule, draft.accounts, draft.categories);
+      const category = rule.categoryId ? draft.categories.find((item) => item.id === rule.categoryId) : undefined;
+      if (rule.active && category?.archived) throw new Error("Active recurring items cannot use an archived category.");
       const index = draft.recurringRules.findIndex((item) => item.id === rule.id);
       if (index >= 0) draft.recurringRules[index] = clone(rule);
       else draft.recurringRules.push(clone(rule));
@@ -163,6 +171,9 @@ export class FinanceStore {
       if (!rule) return;
       if (active) validateRecurringRule({ ...rule, active }, draft.accounts, draft.categories);
       rule.active = active;
+      const category = rule.categoryId ? draft.categories.find((item) => item.id === rule.categoryId) : undefined;
+      if (active && category?.archived) throw new Error("Active recurring items cannot use an archived category.");
+      validateRecurringRule(rule, draft.accounts, draft.categories);
       rule.updatedAt = new Date().toISOString();
     });
   }
@@ -206,6 +217,14 @@ export class FinanceStore {
   async upsertTransaction(transaction: FinanceTransaction): Promise<void> {
     await this.mutate((draft) => {
       const existing = draft.transactions.find((item) => item.id === transaction.id);
+      const resolution = draft.recurringResolutions.find((item) => item.transactionId === transaction.id);
+      if (resolution) {
+        const rule = draft.recurringRules.find((item) => item.id === resolution.ruleId);
+        if (!rule || isTransferTransaction(transaction) || transaction.date !== resolution.occurrenceDate
+          || transaction.type !== rule.type || transaction.accountId !== rule.accountId || transaction.currency !== rule.currency) {
+          throw new Error("A recurring transaction's date, type, account, and currency cannot be changed.");
+        }
+      }
       const allowedArchivedIds = new Set(existing ? transactionAccountIds(existing) : []);
       validateTransaction(transaction, draft.accounts, allowedArchivedIds, draft.categories);
       const index = draft.transactions.findIndex((item) => item.id === transaction.id);
@@ -215,7 +234,12 @@ export class FinanceStore {
   }
 
   async deleteTransaction(transactionId: string): Promise<void> {
-    await this.mutate((draft) => { draft.transactions = draft.transactions.filter((item) => item.id !== transactionId); });
+    await this.mutate((draft) => {
+      if (draft.recurringResolutions.some((resolution) => resolution.transactionId === transactionId)) {
+        throw new Error("Recurring transactions cannot be deleted because their occurrence history must be preserved.");
+      }
+      draft.transactions = draft.transactions.filter((item) => item.id !== transactionId);
+    });
   }
 
   private mutate(mutation: DataMutation): Promise<void> {
@@ -269,6 +293,7 @@ export class FinanceStore {
     if (!( ["cash", "bank", "credit-card"] as const).includes(account.kind)) throw new Error(`Account ${index + 1} has an invalid type.`);
     if (typeof account.archived !== "boolean") throw new Error(`Account ${index + 1} has an invalid archive status.`);
     validateAccount(account);
+    if (account.statementDueDate !== undefined && !isCanonicalDate(account.statementDueDate)) throw new Error(`Account ${index + 1} has an invalid statement due date.`);
     return clone(account);
   }
 

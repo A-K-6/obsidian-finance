@@ -294,6 +294,16 @@ class PlanningView extends FinanceView {
       actions.createEl("button", { text: "Edit budget" }).addEventListener("click", () => this.plugin.openBudgetModal(status.budget));
       actions.createEl("button", { text: "Delete budget" }).addEventListener("click", () => new ConfirmModal(this.app, "Delete budget?", "Transactions are not changed.", "Delete budget", async () => this.plugin.store.deleteBudget(status.budget.id)).open());
     }
+    const allBudgets = budgetsSection.createEl("details");
+    allBudgets.createEl("summary", { text: "Manage all budgets" });
+    if (data.budgets.length === 0) allBudgets.createEl("p", { text: "No budgets have been created." });
+    for (const budget of data.budgets) {
+      const row = allBudgets.createDiv({ cls: "obsidian-finance-compact-row" });
+      row.createSpan({ text: `${categoryName(data.categories, budget.categoryId)} — ${budget.month} — ${budget.calendar} — ${formatMoney(budget.amountMinor, budget.currency, data.settings.locale)}` });
+      row.createEl("button", { text: "Edit" }).addEventListener("click", () => this.plugin.openBudgetModal(budget));
+      row.createEl("button", { text: "Delete" }).addEventListener("click", () => new ConfirmModal(this.app, "Delete budget?", "Transactions are not changed.", "Delete budget", async () => this.plugin.store.deleteBudget(budget.id)).open());
+    }
+
     const categoryList = budgetsSection.createEl("details");
     categoryList.createEl("summary", { text: "Manage categories" });
     for (const category of data.categories) {
@@ -315,7 +325,11 @@ class PlanningView extends FinanceView {
       row.createEl("p", { text: `Next due ${displayDate(rule.nextDueDate, data.settings.calendar)} · ${rule.active ? "Active" : "Paused"}` });
       const actions = row.createDiv({ cls: "obsidian-finance-actions" });
       actions.createEl("button", { text: "Edit recurring item" }).addEventListener("click", () => this.plugin.openRecurringRuleModal(rule));
-      actions.createEl("button", { text: rule.active ? "Pause" : "Activate" }).addEventListener("click", () => void this.plugin.store.setRecurringRuleActive(rule.id, !rule.active));
+      actions.createEl("button", { text: rule.active ? "Pause" : "Activate" }).addEventListener("click", () => {
+        void this.plugin.store.setRecurringRuleActive(rule.id, !rule.active).catch((error: unknown) => {
+          new Notice(error instanceof Error ? error.message : "Could not update recurring item");
+        });
+      });
     }
 
     const cardsSection = container.createDiv({ cls: "obsidian-finance-section" });
@@ -348,9 +362,13 @@ class PlanningView extends FinanceView {
       row.createEl("h4", { text: rule.description });
       row.createEl("p", { text: `${occurrence.due ? "Due" : "Upcoming"} ${displayDate(occurrence.date, data.settings.calendar)} · ${formatMoney(rule.amountMinor, rule.currency, data.settings.locale)}` });
       row.createEl("p", { text: "Manual confirmation required; this is not posted yet.", cls: "obsidian-finance-muted" });
-      const actions = row.createDiv({ cls: "obsidian-finance-actions" });
-      actions.createEl("button", { text: "Record", cls: "mod-cta" }).addEventListener("click", () => this.plugin.openRecurringOccurrence(rule, occurrence.date));
-      actions.createEl("button", { text: "Skip" }).addEventListener("click", () => new ConfirmModal(this.app, "Skip occurrence?", "Skipping records a resolution but creates no transaction.", "Skip occurrence", async () => this.plugin.store.resolveRecurringOccurrence(rule.id, occurrence.date, "skipped")).open());
+      if (occurrence.date === rule.nextDueDate) {
+        const actions = row.createDiv({ cls: "obsidian-finance-actions" });
+        actions.createEl("button", { text: "Record", cls: "mod-cta" }).addEventListener("click", () => this.plugin.openRecurringOccurrence(rule, occurrence.date));
+        actions.createEl("button", { text: "Skip" }).addEventListener("click", () => new ConfirmModal(this.app, "Skip occurrence?", "Skipping records a resolution but creates no transaction.", "Skip occurrence", async () => this.plugin.store.resolveRecurringOccurrence(rule.id, occurrence.date, "skipped")).open());
+      } else {
+        row.createEl("p", { text: "Resolve the earlier occurrence first.", cls: "obsidian-finance-muted" });
+      }
     }
     for (const reminder of cardPaymentReminders(data.accounts, today, through, data.settings.calendar)) {
       const account = data.accounts.find((item) => item.id === reminder.accountId);
@@ -375,6 +393,7 @@ class AccountModal extends Modal {
   private paymentDueDay = "";
   private statementBalance = "";
   private minimumPayment = "";
+  private statementDueDate = "";
   private isSaving = false;
 
   constructor(app: App, private readonly plugin: VaultFinancePlugin, private readonly account?: Account, private readonly afterSave?: () => void) {
@@ -391,6 +410,7 @@ class AccountModal extends Modal {
       this.paymentDueDay = account.paymentDueDay?.toString() ?? "";
       this.statementBalance = account.statementBalanceMinor === undefined ? "" : groupAmountInput(minorToInput(account.statementBalanceMinor, account.currency));
       this.minimumPayment = account.minimumPaymentMinor === undefined ? "" : groupAmountInput(minorToInput(account.minimumPaymentMinor, account.currency));
+      this.statementDueDate = account.statementDueDate ? formatCalendarDate(account.statementDueDate, plugin.store.snapshot().settings.calendar) : "";
     }
   }
 
@@ -438,6 +458,11 @@ class AccountModal extends Modal {
     try {
       const now = new Date().toISOString();
       const card = this.kind === "credit-card";
+      const paymentDueDay = card ? this.optionalDay(this.paymentDueDay) : undefined;
+      const calendar = this.plugin.store.snapshot().settings.calendar;
+      const statementDueDate = card
+        ? this.account?.statementDueDate ?? (paymentDueDay ? nextCardScheduleDate(todayCanonical(), paymentDueDay, calendar) : undefined)
+        : undefined;
       await this.plugin.store.upsertAccount({
         id: this.account?.id ?? id(),
         name: this.name.trim(),
@@ -448,9 +473,10 @@ class AccountModal extends Modal {
         lastFour: card && this.lastFour.trim() ? this.lastFour.trim() : undefined,
         creditLimitMinor: card && this.creditLimit.trim() ? parseMoney(this.creditLimit, this.currency) : undefined,
         statementClosingDay: card ? this.optionalDay(this.statementClosingDay) : undefined,
-        paymentDueDay: card ? this.optionalDay(this.paymentDueDay) : undefined,
+        paymentDueDay,
         statementBalanceMinor: card && this.statementBalance.trim() ? parseNonNegativeMoney(this.statementBalance, this.currency) : undefined,
         minimumPaymentMinor: card && this.minimumPayment.trim() ? parseNonNegativeMoney(this.minimumPayment, this.currency) : undefined,
+        statementDueDate: card && this.statementDueDate.trim() ? parseCalendarDate(this.statementDueDate, calendar) : statementDueDate,
         createdAt: this.account?.createdAt ?? now,
         updatedAt: now
       });
@@ -909,9 +935,11 @@ export default class VaultFinancePlugin extends Plugin {
   openRecurringRuleModal(rule?: RecurringRule): void { new RecurringRuleModal(this.app, this, rule).open(); }
 
   accountHasTransactions(accountId: string): boolean {
-    return this.store.snapshot().transactions.some((transaction) => isTransferTransaction(transaction)
+    const data = this.store.snapshot();
+    return data.transactions.some((transaction) => isTransferTransaction(transaction)
       ? transaction.fromAccountId === accountId || transaction.toAccountId === accountId
-      : transaction.accountId === accountId);
+      : transaction.accountId === accountId)
+      || data.recurringRules.some((rule) => rule.accountId === accountId);
   }
 
   private showReminderSummary(): void {

@@ -28,6 +28,7 @@ export interface Account {
   paymentDueDay?: number;
   statementBalanceMinor?: number;
   minimumPaymentMinor?: number;
+  statementDueDate?: string;
   createdAt: string;
   updatedAt: string;
 }
