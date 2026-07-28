@@ -41,6 +41,23 @@ describe("recurring data integrity", () => {
     await store.resolveRecurringOccurrence(rule.id, rule.nextDueDate, "recorded", transaction);
     await expect(store.deleteTransaction(transaction.id)).rejects.toThrow("cannot be deleted");
     await expect(store.upsertTransaction({ ...transaction, date: "2026-07-02" })).rejects.toThrow("cannot be changed");
+    await store.upsertAccount({ ...account, id: "bank-2", name: "Other bank" });
+    await expect(store.upsertRecurringRule({ ...rule, accountId: "bank-2" })).rejects.toThrow("cannot change");
+  });
+
+  it("rejects a recorded occurrence whose account does not match its rule", async () => {
+    const store = await populatedStore();
+    await store.upsertAccount({ ...account, id: "bank-2", name: "Other bank" });
+    await expect(store.resolveRecurringOccurrence(rule.id, rule.nextDueDate, "recorded", { ...transaction, accountId: "bank-2" }))
+      .rejects.toThrow("must match");
+  });
+
+  it("requires card amounts to be cleared before a currency change", async () => {
+    const store = new FinanceStore(async () => undefined);
+    await store.load(null);
+    const card: Account = { ...account, id: "card", kind: "credit-card", creditLimitMinor: 100_00 };
+    await store.upsertAccount(card);
+    await expect(store.upsertAccount({ ...card, currency: "EUR" })).rejects.toThrow("Reset the opening balance");
   });
 
   it("does not reactivate a rule with an archived category", async () => {
@@ -48,6 +65,9 @@ describe("recurring data integrity", () => {
     await store.setRecurringRuleActive(rule.id, false);
     await store.archiveCategory(category.id);
     await expect(store.setRecurringRuleActive(rule.id, true)).rejects.toThrow("archived category");
+    const invalidPersistedData = store.snapshot();
+    invalidPersistedData.recurringRules[0]!.active = true;
+    await expect(new FinanceStore(async () => undefined).load(invalidPersistedData)).rejects.toThrow("archived category");
   });
 });
 

@@ -1,7 +1,7 @@
 {
   "id": "vault-finance",
   "name": "Vault Finance",
-  "version": "2.0.0",
+  "version": "2.0.1",
   "minAppVersion": "1.7.2",
   "description": "Plan budgets, recurring items, credit cards, and multi-currency transactions locally.",
   "author": "Jabama",

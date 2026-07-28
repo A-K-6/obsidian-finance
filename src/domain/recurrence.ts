@@ -20,6 +20,7 @@ export function validateRecurringRule(rule: RecurringRule, accounts: Account[], 
   if (rule.type === "income" && account.kind === "credit-card") throw new Error("Recurring income cannot use a credit card.");
   const category = categories.find((item) => item.id === rule.categoryId);
   if (!category || category.type !== rule.type) throw new Error(`A matching ${rule.type} category is required.`);
+  if (category.archived && rule.active) throw new Error("An archived category cannot be used for an active recurring rule.");
   if (!Number.isSafeInteger(rule.amountMinor) || rule.amountMinor <= 0) throw new Error("Recurring amount must be greater than zero.");
   if (!rule.description.trim()) throw new Error("Recurring description is required.");
   if (!isCanonicalDate(rule.anchorDueDate) || !isCanonicalDate(rule.nextDueDate)) throw new Error("Recurring dates must be valid Gregorian dates.");

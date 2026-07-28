@@ -421,8 +421,8 @@ class AccountModal extends Modal {
     this.contentEl.createEl("h2", { text: this.account ? "Edit account" : "Add account" });
     new Setting(this.contentEl).setName("Name").addText((text) => text.setPlaceholder("Everyday card").setValue(this.name).onChange((value) => this.name = value));
     const locked = this.account !== undefined && this.plugin.accountHasTransactions(this.account.id);
-    new Setting(this.contentEl).setName("Type").setDesc(locked ? "Cannot change after transactions have been recorded." : "").addDropdown((dropdown) => dropdown.addOptions({ cash: "Cash", bank: "Bank", "credit-card": "Credit card" }).setValue(this.kind).setDisabled(locked).onChange((value) => { this.kind = value as AccountKind; this.render(); }));
-    new Setting(this.contentEl).setName("Currency").setDesc(locked ? "Cannot change after transactions have been recorded." : "An account always uses one currency.").addDropdown((dropdown) => dropdown.addOptions(currencyOptions()).setValue(this.currency).setDisabled(locked).onChange((value) => { this.currency = value; this.openingBalance = "0"; this.creditLimit = ""; this.render(); }));
+    new Setting(this.contentEl).setName("Type").setDesc(locked ? "Cannot change while transactions or recurring items reference this account." : "").addDropdown((dropdown) => dropdown.addOptions({ cash: "Cash", bank: "Bank", "credit-card": "Credit card" }).setValue(this.kind).setDisabled(locked).onChange((value) => { this.kind = value as AccountKind; this.render(); }));
+    new Setting(this.contentEl).setName("Currency").setDesc(locked ? "Cannot change while transactions or recurring items reference this account." : "An account always uses one currency.").addDropdown((dropdown) => dropdown.addOptions(currencyOptions()).setValue(this.currency).setDisabled(locked).onChange((value) => { this.currency = value; this.openingBalance = "0"; this.creditLimit = ""; this.statementBalance = ""; this.minimumPayment = ""; this.render(); }));
     this.addMoneyField(this.kind === "credit-card" ? "Opening amount owed" : "Opening balance", this.openingBalance, (value) => this.openingBalance = value);
     if (this.kind === "credit-card") {
       new Setting(this.contentEl).setName("Last four digits (optional)").setDesc("Never enter a full card number or security credentials.").addText((text) => text.setPlaceholder("1234").setValue(this.lastFour).onChange((value) => this.lastFour = value));
@@ -431,6 +431,7 @@ class AccountModal extends Modal {
       new Setting(this.contentEl).setName("Payment due day (optional)").setDesc("Day 1 through 31; shorter months clamp to month end.").addText((text) => text.setPlaceholder("15").setValue(this.paymentDueDay).onChange((value) => this.paymentDueDay = value));
       this.addMoneyField(`Statement balance (${this.currency}, optional)`, this.statementBalance, (value) => this.statementBalance = value);
       this.addMoneyField(`Minimum payment (${this.currency}, optional)`, this.minimumPayment, (value) => this.minimumPayment = value);
+      new Setting(this.contentEl).setName("Statement due date (optional)").setDesc(`Required when a statement balance is set. Enter a ${this.plugin.store.snapshot().settings.calendar} date, for example 2026-07-15.`).addText((text) => text.setPlaceholder("2026-07-15").setValue(this.statementDueDate).onChange((value) => this.statementDueDate = value));
     }
     const footer = this.contentEl.createDiv({ cls: "modal-button-container" });
     footer.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
@@ -460,9 +461,9 @@ class AccountModal extends Modal {
       const card = this.kind === "credit-card";
       const paymentDueDay = card ? this.optionalDay(this.paymentDueDay) : undefined;
       const calendar = this.plugin.store.snapshot().settings.calendar;
-      const statementDueDate = card
-        ? this.account?.statementDueDate ?? (paymentDueDay ? nextCardScheduleDate(todayCanonical(), paymentDueDay, calendar) : undefined)
-        : undefined;
+      if (card && this.statementBalance.trim() && !this.statementDueDate.trim()) {
+        throw new Error("Enter the due date for this statement balance.");
+      }
       await this.plugin.store.upsertAccount({
         id: this.account?.id ?? id(),
         name: this.name.trim(),
@@ -476,7 +477,7 @@ class AccountModal extends Modal {
         paymentDueDay,
         statementBalanceMinor: card && this.statementBalance.trim() ? parseNonNegativeMoney(this.statementBalance, this.currency) : undefined,
         minimumPaymentMinor: card && this.minimumPayment.trim() ? parseNonNegativeMoney(this.minimumPayment, this.currency) : undefined,
-        statementDueDate: card && this.statementDueDate.trim() ? parseCalendarDate(this.statementDueDate, calendar) : statementDueDate,
+        statementDueDate: card && this.statementDueDate.trim() ? parseCalendarDate(this.statementDueDate, calendar) : undefined,
         createdAt: this.account?.createdAt ?? now,
         updatedAt: now
       });
@@ -827,51 +828,62 @@ class TransactionReferenceModal extends SuggestModal<FinanceTransaction> {
   onChooseSuggestion(transaction: FinanceTransaction): void { this.editor.replaceSelection(transactionReference(transaction.id)); }
 }
 
-class FinanceSettingTab extends PluginSettingTab {
+type CompatibleSettingTab = Omit<PluginSettingTab, "display"> & { display(): void };
+const CompatiblePluginSettingTab = PluginSettingTab as unknown as new (app: App, plugin: Plugin) => CompatibleSettingTab;
+
+class FinanceSettingTab extends CompatiblePluginSettingTab {
   constructor(app: App, private readonly plugin: VaultFinancePlugin) { super(app, plugin); }
+
+  private persist(action: Promise<void>, fallback = "Could not save setting"): void {
+    void action.catch((error: unknown) => new Notice(error instanceof Error ? error.message : fallback));
+  }
 
   private refreshSettingsTab(): void {
     const update = Reflect.get(this, "update") as unknown;
     if (typeof update === "function") Reflect.apply(update, this, []);
-    else this.display();
+    else this.renderLegacySettings();
   }
 
-  getSettingDefinitions(): ReturnType<PluginSettingTab["getSettingDefinitions"]> {
+  getSettingDefinitions = (): ReturnType<PluginSettingTab["getSettingDefinitions"]> => {
     const data = this.plugin.store.snapshot();
     return [
-      { name: "Default currency", desc: "Used when creating new accounts and budgets. Reports remain separated by currency.", render: (setting: Setting) => { setting.addDropdown((dropdown) => dropdown.addOptions(currencyOptions()).setValue(data.settings.defaultCurrency).onChange(async (value) => this.plugin.store.updateSettings({ defaultCurrency: value }))); } },
+      { name: "Default currency", desc: "Used when creating new accounts and budgets. Reports remain separated by currency.", render: (setting: Setting) => { setting.addDropdown((dropdown) => dropdown.addOptions(currencyOptions()).setValue(data.settings.defaultCurrency).onChange((value) => this.persist(this.plugin.store.updateSettings({ defaultCurrency: value })))); } },
       { name: "Display locale", desc: "Controls number and currency formatting.", render: (setting: Setting) => { setting.addText((text) => text.setValue(data.settings.locale).onChange(async (value) => { if (!value.trim()) return; try { await this.plugin.store.updateSettings({ locale: normalizeLocale(value) }); } catch (error) { new Notice(error instanceof Error ? error.message : "Invalid locale"); } })); } },
-      { name: "Calendar", desc: "Controls displayed dates, monthly grouping, planning, and new recurring rules.", render: (setting: Setting) => { setting.addDropdown((dropdown) => dropdown.addOptions({ gregorian: "Gregorian", persian: "Persian" }).setValue(data.settings.calendar).onChange(async (value) => this.plugin.store.updateSettings({ calendar: value as CalendarSystem }))); } },
-      { name: "First day of week", render: (setting: Setting) => { setting.addDropdown((dropdown) => dropdown.addOptions({ "0": "Sunday", "1": "Monday", "6": "Saturday" }).setValue(String(data.settings.weekStartsOn)).onChange(async (value) => this.plugin.store.updateSettings({ weekStartsOn: Number(value) }))); } },
-      { name: "Default account", render: (setting: Setting) => { setting.addDropdown((dropdown) => dropdown.addOption("", "None").addOptions(accountOptions(data.accounts)).setValue(data.settings.defaultAccountId ?? "").onChange(async (value) => this.plugin.store.updateSettings({ defaultAccountId: value || undefined }))); } },
+      { name: "Calendar", desc: "Controls displayed dates, monthly grouping, planning, and new recurring rules.", render: (setting: Setting) => { setting.addDropdown((dropdown) => dropdown.addOptions({ gregorian: "Gregorian", persian: "Persian" }).setValue(data.settings.calendar).onChange((value) => this.persist(this.plugin.store.updateSettings({ calendar: value as CalendarSystem })))); } },
+      { name: "First day of week", render: (setting: Setting) => { setting.addDropdown((dropdown) => dropdown.addOptions({ "0": "Sunday", "1": "Monday", "6": "Saturday" }).setValue(String(data.settings.weekStartsOn)).onChange((value) => this.persist(this.plugin.store.updateSettings({ weekStartsOn: Number(value) })))); } },
+      { name: "Default account", render: (setting: Setting) => { setting.addDropdown((dropdown) => dropdown.addOption("", "None").addOptions(accountOptions(data.accounts)).setValue(data.settings.defaultAccountId ?? "").onChange((value) => this.persist(this.plugin.store.updateSettings({ defaultAccountId: value || undefined })))); } },
       {
         type: "group", heading: "Accounts", items: [
           { name: "Add an account", desc: "Store only a nickname and optional card details.", render: (setting: Setting) => setting.addButton((button) => button.setButtonText("Add account").setCta().onClick(() => this.plugin.openAccountModal(undefined, () => this.refreshSettingsTab()))) },
           ...data.accounts.map((account) => ({ name: account.name, desc: `${account.kind} · ${account.currency}${account.archived ? " · archived" : ""}`, render: (setting: Setting) => {
             setting.addButton((button) => button.setIcon("pencil").setTooltip("Edit account").onClick(() => this.plugin.openAccountModal(account, () => this.refreshSettingsTab())));
-            if (!account.archived) setting.addButton((button) => button.setIcon("archive").setTooltip("Archive account").onClick(async () => { await this.plugin.store.archiveAccount(account.id); this.refreshSettingsTab(); }));
+            if (!account.archived) setting.addButton((button) => button.setIcon("archive").setTooltip("Archive account").onClick(() => this.persist(this.plugin.store.archiveAccount(account.id).then(() => this.refreshSettingsTab()), "Could not archive account")));
           } }))
         ]
       },
       { type: "group", heading: "Privacy", items: [{ name: "Local-only storage", desc: "Finance data stays in this plugin's data.json. There are no network requests, telemetry, bank connections, system notifications, or silent posting." }] }
     ];
-  }
+  };
 
   display(): void {
+    this.renderLegacySettings();
+  }
+
+  private renderLegacySettings(): void {
     const { containerEl } = this;
     containerEl.empty();
     const data = this.plugin.store.snapshot();
-    new Setting(containerEl).setName("Default currency").setDesc("Used for new accounts and budgets. Reports remain separated by currency.").addDropdown((dropdown) => dropdown.addOptions(currencyOptions()).setValue(data.settings.defaultCurrency).onChange(async (value) => { await this.plugin.store.updateSettings({ defaultCurrency: value }); }));
+    new Setting(containerEl).setName("Default currency").setDesc("Used for new accounts and budgets. Reports remain separated by currency.").addDropdown((dropdown) => dropdown.addOptions(currencyOptions()).setValue(data.settings.defaultCurrency).onChange((value) => this.persist(this.plugin.store.updateSettings({ defaultCurrency: value }))));
     new Setting(containerEl).setName("Display locale").setDesc("Controls number and currency formatting.").addText((text) => text.setValue(data.settings.locale).onChange(async (value) => { if (!value.trim()) return; try { await this.plugin.store.updateSettings({ locale: normalizeLocale(value) }); } catch (error) { new Notice(error instanceof Error ? error.message : "Invalid locale"); } }));
-    new Setting(containerEl).setName("Calendar").setDesc("Controls displayed dates, monthly grouping, planning, and new recurring rules.").addDropdown((dropdown) => dropdown.addOptions({ gregorian: "Gregorian", persian: "Persian" }).setValue(data.settings.calendar).onChange(async (value) => { await this.plugin.store.updateSettings({ calendar: value as CalendarSystem }); }));
-    new Setting(containerEl).setName("First day of week").addDropdown((dropdown) => dropdown.addOptions({ "0": "Sunday", "1": "Monday", "6": "Saturday" }).setValue(String(data.settings.weekStartsOn)).onChange(async (value) => { await this.plugin.store.updateSettings({ weekStartsOn: Number(value) }); }));
-    new Setting(containerEl).setName("Default account").addDropdown((dropdown) => dropdown.addOption("", "None").addOptions(accountOptions(data.accounts)).setValue(data.settings.defaultAccountId ?? "").onChange(async (value) => { await this.plugin.store.updateSettings({ defaultAccountId: value || undefined }); }));
+    new Setting(containerEl).setName("Calendar").setDesc("Controls displayed dates, monthly grouping, planning, and new recurring rules.").addDropdown((dropdown) => dropdown.addOptions({ gregorian: "Gregorian", persian: "Persian" }).setValue(data.settings.calendar).onChange((value) => this.persist(this.plugin.store.updateSettings({ calendar: value as CalendarSystem }))));
+    new Setting(containerEl).setName("First day of week").addDropdown((dropdown) => dropdown.addOptions({ "0": "Sunday", "1": "Monday", "6": "Saturday" }).setValue(String(data.settings.weekStartsOn)).onChange((value) => this.persist(this.plugin.store.updateSettings({ weekStartsOn: Number(value) }))));
+    new Setting(containerEl).setName("Default account").addDropdown((dropdown) => dropdown.addOption("", "None").addOptions(accountOptions(data.accounts)).setValue(data.settings.defaultAccountId ?? "").onChange((value) => this.persist(this.plugin.store.updateSettings({ defaultAccountId: value || undefined }))));
     new Setting(containerEl).setName("Accounts").setHeading();
-    new Setting(containerEl).setName("Add an account").addButton((button) => button.setButtonText("Add account").setCta().onClick(() => this.plugin.openAccountModal(undefined, () => this.display())));
+    new Setting(containerEl).setName("Add an account").addButton((button) => button.setButtonText("Add account").setCta().onClick(() => this.plugin.openAccountModal(undefined, () => this.renderLegacySettings())));
     for (const account of data.accounts) {
       const setting = new Setting(containerEl).setName(account.name).setDesc(`${account.kind} · ${account.currency}${account.archived ? " · archived" : ""}`);
-      setting.addButton((button) => button.setIcon("pencil").setTooltip("Edit account").onClick(() => this.plugin.openAccountModal(account, () => this.display())));
-      if (!account.archived) setting.addButton((button) => button.setIcon("archive").setTooltip("Archive account").onClick(async () => { await this.plugin.store.archiveAccount(account.id); this.display(); }));
+      setting.addButton((button) => button.setIcon("pencil").setTooltip("Edit account").onClick(() => this.plugin.openAccountModal(account, () => this.renderLegacySettings())));
+      if (!account.archived) setting.addButton((button) => button.setIcon("archive").setTooltip("Archive account").onClick(() => this.persist(this.plugin.store.archiveAccount(account.id).then(() => this.renderLegacySettings()), "Could not archive account")));
     }
     new Setting(containerEl).setName("Privacy").setHeading();
     containerEl.createEl("p", { text: "All finance data stays in this plugin's data.json. There are no network requests, telemetry, bank connections, system notifications, or silent posting. Never enter full card numbers, security codes, pins, or banking passwords." });
@@ -907,7 +919,13 @@ export default class VaultFinancePlugin extends Plugin {
     });
   }
 
-  async activateView(type: string, reveal = true): Promise<void> {
+  activateView(type: string, reveal = true): void {
+    void this.activateViewInternal(type, reveal).catch((error: unknown) => {
+      new Notice(error instanceof Error ? error.message : "Could not open finance view");
+    });
+  }
+
+  private async activateViewInternal(type: string, reveal: boolean): Promise<void> {
     const existing = this.app.workspace.getLeavesOfType(type)[0];
     const leaf = existing ?? (type === DASHBOARD_VIEW ? this.app.workspace.getRightLeaf(false) : this.app.workspace.getLeaf(true));
     if (!leaf) return;

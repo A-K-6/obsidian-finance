@@ -92,9 +92,10 @@ export function cardPaymentReminders(accounts: Account[], today: string, through
     if (account.paymentDueDay === undefined) continue;
     const parts = calendarDateParts(today, calendar);
     const currentMonthDue = clampedCalendarDate(parts.year, parts.month, account.paymentDueDay, calendar);
+    const previousMonth = calendarDateParts(addCalendarPeriod(clampedCalendarDate(parts.year, parts.month, 1, calendar), "monthly", -1, calendar), calendar);
     const dueDate = compareCanonicalDates(currentMonthDue, today) <= 0
       ? currentMonthDue
-      : nextCardScheduleDate(today, account.paymentDueDay, calendar);
+      : clampedCalendarDate(previousMonth.year, previousMonth.month, account.paymentDueDay, calendar);
     if (compareCanonicalDates(dueDate, throughDate) > 0) continue;
     reminders.push({
       accountId: account.id,

@@ -6,7 +6,7 @@ const timestamp = "2026-01-01T00:00:00.000Z";
 const card: Account = {
   id: "card", name: "Card", kind: "credit-card", currency: "USD", openingBalanceMinor: 0, archived: false,
   creditLimitMinor: 100_000, statementClosingDay: 31, paymentDueDay: 15,
-  statementBalanceMinor: 40_000, minimumPaymentMinor: 5_000, createdAt: timestamp, updatedAt: timestamp
+  statementBalanceMinor: 40_000, minimumPaymentMinor: 5_000, statementDueDate: "2026-07-15", createdAt: timestamp, updatedAt: timestamp
 };
 
 describe("credit cards", () => {
@@ -26,6 +26,7 @@ describe("credit cards", () => {
     expect(cardPaymentReminders([card], "2026-07-15", "2026-07-15", "gregorian")[0]?.status).toBe("due");
     expect(cardPaymentReminders([card], "2026-07-16", "2026-07-16", "gregorian")[0]?.status).toBe("overdue");
     expect(cardPaymentReminders([card], "2026-07-01", "2026-07-31", "gregorian")[0]).toMatchObject({ dueDate: "2026-07-15", amountMinor: 5_000, status: "upcoming" });
+    expect(cardPaymentReminders([{ ...card, statementDueDate: undefined }], "2026-08-01", "2026-08-31", "gregorian")[0]).toMatchObject({ dueDate: "2026-07-15", status: "overdue" });
   });
 
   it("uses Persian calendar schedule months", () => {

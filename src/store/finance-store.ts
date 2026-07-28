@@ -85,6 +85,9 @@ export class FinanceStore {
     await this.mutate((draft) => {
       validateAccount(account);
       if (account.statementDueDate !== undefined && !isCanonicalDate(account.statementDueDate)) throw new Error("Statement due date is invalid.");
+      if ((account.statementBalanceMinor ?? 0) > 0 && account.statementDueDate === undefined) {
+        throw new Error("A statement due date is required when a statement balance is set.");
+      }
       const existing = draft.accounts.find((item) => item.id === account.id);
       const hasDependents = draft.transactions.some((transaction) => transactionAccountIds(transaction).includes(account.id))
         || draft.recurringRules.some((rule) => rule.accountId === account.id);
@@ -92,8 +95,9 @@ export class FinanceStore {
         throw new Error("Account type and currency cannot change after transactions or recurring items have been recorded.");
       }
       if (existing && existing.currency !== account.currency
-        && (account.statementBalanceMinor !== undefined || account.minimumPaymentMinor !== undefined)) {
-        throw new Error("Clear the statement balance and minimum payment before changing card currency.");
+        && (account.openingBalanceMinor !== 0 || account.creditLimitMinor !== undefined
+          || account.statementBalanceMinor !== undefined || account.minimumPaymentMinor !== undefined)) {
+        throw new Error("Reset the opening balance, credit limit, statement balance, and minimum payment before changing currency.");
       }
       const index = draft.accounts.findIndex((item) => item.id === account.id);
       if (index >= 0) draft.accounts[index] = clone(account);
@@ -159,6 +163,12 @@ export class FinanceStore {
       validateRecurringRule(rule, draft.accounts, draft.categories);
       const category = rule.categoryId ? draft.categories.find((item) => item.id === rule.categoryId) : undefined;
       if (rule.active && category?.archived) throw new Error("Active recurring items cannot use an archived category.");
+      const existing = draft.recurringRules.find((item) => item.id === rule.id);
+      const hasRecordedOccurrences = draft.recurringResolutions.some((resolution) => resolution.ruleId === rule.id && resolution.action === "recorded");
+      if (existing && hasRecordedOccurrences
+        && (existing.type !== rule.type || existing.accountId !== rule.accountId || existing.currency !== rule.currency)) {
+        throw new Error("A recurring item's type, account, and currency cannot change after an occurrence has been recorded.");
+      }
       const index = draft.recurringRules.findIndex((item) => item.id === rule.id);
       if (index >= 0) draft.recurringRules[index] = clone(rule);
       else draft.recurringRules.push(clone(rule));
@@ -195,6 +205,9 @@ export class FinanceStore {
         if (!transaction || isTransferTransaction(transaction)) throw new Error("A transaction is required to record this occurrence.");
         if (transaction.date !== occurrenceDate) throw new Error("Recorded transaction date must match the occurrence date.");
         if (draft.transactions.some((item) => item.id === transaction.id)) throw new Error("Transaction ID already exists.");
+        if (transaction.type !== rule.type || transaction.accountId !== rule.accountId || transaction.currency !== rule.currency) {
+          throw new Error("The recorded transaction type, account, and currency must match the recurring item.");
+        }
         validateTransaction(transaction, draft.accounts, new Set(), draft.categories);
         draft.transactions.push(clone(transaction));
       } else if (transaction !== undefined) {
