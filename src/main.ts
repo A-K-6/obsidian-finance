@@ -77,8 +77,14 @@ function addIconButton(container: HTMLElement, icon: string, label: string, acti
   button.addEventListener("click", action);
 }
 
+type FinanceReferenceKind = "transaction" | "account" | "category" | "budget" | "recurring";
+
+function financeReference(kind: FinanceReferenceKind, itemId: string): string {
+  return `\`\`\`vault-finance\n${kind}: ${itemId}\n\`\`\``;
+}
+
 function transactionReference(transactionId: string): string {
-  return `\`\`\`vault-finance\ntransaction: ${transactionId}\n\`\`\``;
+  return financeReference("transaction", transactionId);
 }
 
 function amountDescription(value: string, currency: string, locale: string): string {
@@ -271,6 +277,13 @@ class PlanningView extends FinanceView {
     const today = todayCanonical();
     const header = container.createDiv({ cls: "obsidian-finance-header" });
     header.createEl("h2", { text: "Planning" });
+    const help = container.createEl("details", { cls: "obsidian-finance-card obsidian-finance-planning-help" });
+    help.createEl("summary", { text: "What do these planning terms mean?" });
+    help.createEl("p", { text: "Category: a reusable label for income or spending, such as groceries or salary. Categories keep similar transactions together." });
+    help.createEl("p", { text: "Budget: a spending limit for one expense category, currency, calendar, and month. It compares the limit with recorded spending minus refunds." });
+    help.createEl("p", { text: "Recurring: a schedule for a repeated bill or income item. It never posts automatically; you must record or skip each occurrence." });
+    help.createEl("p", { text: "Credit card: an account whose balance is the amount owed. The plugin tracks utilization, statement details, and reminders, but never initiates payments." });
+    help.createEl("p", { text: "Upcoming: future or overdue recurring occurrences and card dates within the planning window. They are reminders, not posted transactions." });
     header.createEl("p", { text: `Dates use the ${data.settings.calendar === "persian" ? "Persian" : "Gregorian"} calendar. Nothing is posted automatically.`, cls: "obsidian-finance-muted" });
 
     const budgetsSection = container.createDiv({ cls: "obsidian-finance-section" });
@@ -794,38 +807,72 @@ class RecurringRuleModal extends Modal {
   }
 }
 
-class TransactionReferenceModal extends SuggestModal<FinanceTransaction> {
+type FinanceReferenceSuggestion =
+  | { kind: "transaction"; item: FinanceTransaction }
+  | { kind: "account"; item: Account }
+  | { kind: "category"; item: Category }
+  | { kind: "budget"; item: MonthlyBudget }
+  | { kind: "recurring"; item: RecurringRule };
+
+class TransactionReferenceModal extends SuggestModal<FinanceReferenceSuggestion> {
   constructor(app: App, private readonly plugin: VaultFinancePlugin, private readonly editor: Editor) {
     super(app);
-    this.setPlaceholder("Search transactions by date, description, category, or account");
+    this.setPlaceholder("Search transactions, accounts, categories, budgets, or recurring items");
   }
 
-  getSuggestions(query: string): FinanceTransaction[] {
+  getSuggestions(query: string): FinanceReferenceSuggestion[] {
     const data = this.plugin.store.snapshot();
+    const suggestions: FinanceReferenceSuggestion[] = [
+      ...[...data.transactions].sort((first, second) => second.date.localeCompare(first.date) || second.updatedAt.localeCompare(first.updatedAt)).map((item) => ({ kind: "transaction" as const, item })),
+      ...data.accounts.map((item) => ({ kind: "account" as const, item })),
+      ...data.categories.map((item) => ({ kind: "category" as const, item })),
+      ...data.budgets.map((item) => ({ kind: "budget" as const, item })),
+      ...data.recurringRules.map((item) => ({ kind: "recurring" as const, item }))
+    ];
     const normalized = query.trim().toLowerCase();
-    return [...data.transactions]
-      .sort((first, second) => second.date.localeCompare(first.date) || second.updatedAt.localeCompare(first.updatedAt))
-      .filter((transaction) => {
-        if (!normalized) return true;
+    if (!normalized) return suggestions;
+    return suggestions.filter((suggestion) => {
+      if (suggestion.kind === "transaction") {
+        const transaction = suggestion.item;
         const accountNames = isTransferTransaction(transaction)
           ? data.accounts.filter((account) => account.id === transaction.fromAccountId || account.id === transaction.toAccountId).map((account) => account.name)
           : [data.accounts.find((account) => account.id === transaction.accountId)?.name ?? ""];
         const details = isTransferTransaction(transaction) ? [] : [transaction.payee ?? "", categoryName(data.categories, transaction.categoryId)];
-        return [transaction.date, formatCalendarDate(transaction.date, data.settings.calendar), transaction.type, transaction.note ?? "", ...accountNames, ...details].some((value) => value.toLowerCase().includes(normalized));
-      });
+        return ["transaction", transaction.date, formatCalendarDate(transaction.date, data.settings.calendar), transaction.type, transaction.note ?? "", ...accountNames, ...details].some((value) => value.toLowerCase().includes(normalized));
+      }
+      if (suggestion.kind === "account") return ["account", suggestion.item.kind, suggestion.item.name, suggestion.item.currency].some((value) => value.toLowerCase().includes(normalized));
+      if (suggestion.kind === "category") return ["category", suggestion.item.type, suggestion.item.name].some((value) => value.toLowerCase().includes(normalized));
+      if (suggestion.kind === "budget") return ["budget", suggestion.item.month, suggestion.item.calendar, suggestion.item.currency, categoryName(data.categories, suggestion.item.categoryId)].some((value) => value.toLowerCase().includes(normalized));
+      return ["recurring", suggestion.item.type, suggestion.item.description, suggestion.item.frequency, suggestion.item.currency].some((value) => value.toLowerCase().includes(normalized));
+    });
   }
 
-  renderSuggestion(transaction: FinanceTransaction, element: HTMLElement): void {
+  renderSuggestion(suggestion: FinanceReferenceSuggestion, element: HTMLElement): void {
     const data = this.plugin.store.snapshot();
-    const accountName = isTransferTransaction(transaction)
-      ? `${data.accounts.find((account) => account.id === transaction.fromAccountId)?.name ?? "Unknown"} → ${data.accounts.find((account) => account.id === transaction.toAccountId)?.name ?? "Unknown"}`
-      : data.accounts.find((account) => account.id === transaction.accountId)?.name ?? "Unknown";
-    const amount = isTransferTransaction(transaction) ? formatMoney(transaction.sourceAmountMinor, transaction.sourceCurrency, data.settings.locale) : formatMoney(transaction.amountMinor, transaction.currency, data.settings.locale);
-    element.createDiv({ text: `${transactionLabel(transaction.type)} · ${amount}` });
-    element.createEl("small", { text: `${displayDate(transaction.date, data.settings.calendar)} · ${accountName}` });
+    if (suggestion.kind === "transaction") {
+      const transaction = suggestion.item;
+      const accountName = isTransferTransaction(transaction)
+        ? `${data.accounts.find((account) => account.id === transaction.fromAccountId)?.name ?? "Unknown"} → ${data.accounts.find((account) => account.id === transaction.toAccountId)?.name ?? "Unknown"}`
+        : data.accounts.find((account) => account.id === transaction.accountId)?.name ?? "Unknown";
+      const amount = isTransferTransaction(transaction) ? formatMoney(transaction.sourceAmountMinor, transaction.sourceCurrency, data.settings.locale) : formatMoney(transaction.amountMinor, transaction.currency, data.settings.locale);
+      element.createDiv({ text: `${transactionLabel(transaction.type)} · ${amount}` });
+      element.createEl("small", { text: `${displayDate(transaction.date, data.settings.calendar)} · ${accountName}` });
+    } else if (suggestion.kind === "account") {
+      element.createDiv({ text: `${suggestion.item.kind === "credit-card" ? "Credit card" : "Account"} · ${suggestion.item.name}` });
+      element.createEl("small", { text: `${suggestion.item.kind} · ${suggestion.item.currency}` });
+    } else if (suggestion.kind === "category") {
+      element.createDiv({ text: `Category · ${suggestion.item.name}` });
+      element.createEl("small", { text: `${suggestion.item.type}${suggestion.item.archived ? " · archived" : ""}` });
+    } else if (suggestion.kind === "budget") {
+      element.createDiv({ text: `Budget · ${categoryName(data.categories, suggestion.item.categoryId)}` });
+      element.createEl("small", { text: `${suggestion.item.month} · ${formatMoney(suggestion.item.amountMinor, suggestion.item.currency, data.settings.locale)}` });
+    } else {
+      element.createDiv({ text: `Recurring · ${suggestion.item.description}` });
+      element.createEl("small", { text: `${suggestion.item.frequency} · next ${displayDate(suggestion.item.nextDueDate, suggestion.item.calendar)}` });
+    }
   }
 
-  onChooseSuggestion(transaction: FinanceTransaction): void { this.editor.replaceSelection(transactionReference(transaction.id)); }
+  onChooseSuggestion(suggestion: FinanceReferenceSuggestion): void { this.editor.replaceSelection(financeReference(suggestion.kind, suggestion.item.id)); }
 }
 
 type CompatibleSettingTab = Omit<PluginSettingTab, "display"> & { display(): void };
@@ -910,7 +957,7 @@ export default class VaultFinancePlugin extends Plugin {
     this.addCommand({ id: "open-planning", name: "Open planning", callback: () => void this.activateView(PLANNING_VIEW) });
     this.addCommand({ id: "add-transaction", name: "Add transaction", callback: () => this.openTransactionModal() });
     this.addCommand({ id: "add-account", name: "Add account", callback: () => this.openAccountModal() });
-    this.addCommand({ id: "insert-transaction-reference", name: "Insert transaction reference", editorCallback: (editor) => new TransactionReferenceModal(this.app, this, editor).open() });
+    this.addCommand({ id: "insert-transaction-reference", name: "Insert finance reference", editorCallback: (editor) => new TransactionReferenceModal(this.app, this, editor).open() });
     this.registerMarkdownCodeBlockProcessor("vault-finance", (source, element) => this.renderTransactionReference(source, element));
     this.addSettingTab(new FinanceSettingTab(this.app, this));
     this.app.workspace.onLayoutReady(() => {
@@ -972,21 +1019,75 @@ export default class VaultFinancePlugin extends Plugin {
 
   renderTransactionReference(source: string, element: HTMLElement): void {
     element.empty();
-    const transactionId = source.split("\n").map((line) => line.trim()).find((line) => line.startsWith("transaction:"))?.slice("transaction:".length).trim();
+    const lines = source.split("\n").map((line) => line.trim());
+    const kind = (["transaction", "account", "category", "budget", "recurring"] as FinanceReferenceKind[])
+      .find((candidate) => lines.some((line) => line.startsWith(`${candidate}:`)));
+    const itemId = kind ? lines.find((line) => line.startsWith(`${kind}:`))?.slice(kind.length + 1).trim() : undefined;
     const data = this.store.snapshot();
-    const transaction = data.transactions.find((item) => item.id === transactionId);
-    if (!transaction) { element.createDiv({ text: "Transaction reference not found.", cls: "obsidian-finance-muted" }); return; }
-    const card = element.createDiv({ cls: "obsidian-finance-card obsidian-finance-reference" });
+    const card = element.createDiv({ cls: "obsidian-finance-reference" });
     const heading = card.createDiv({ cls: "obsidian-finance-reference-heading" });
-    heading.createEl("strong", { text: transactionLabel(transaction.type) });
-    heading.createSpan({ text: displayDate(transaction.date, data.settings.calendar) });
-    const accountName = isTransferTransaction(transaction)
-      ? `${data.accounts.find((account) => account.id === transaction.fromAccountId)?.name ?? "Unknown"} → ${data.accounts.find((account) => account.id === transaction.toAccountId)?.name ?? "Unknown"}`
-      : data.accounts.find((account) => account.id === transaction.accountId)?.name ?? "Unknown";
-    card.createDiv({ text: accountName, cls: "obsidian-finance-muted" });
-    card.createEl("strong", { text: isTransferTransaction(transaction) ? formatMoney(transaction.sourceAmountMinor, transaction.sourceCurrency, data.settings.locale) : formatMoney(transaction.amountMinor, transaction.currency, data.settings.locale) });
-    if (!isTransferTransaction(transaction) && transaction.payee) card.createDiv({ text: transaction.payee });
-    card.createEl("button", { text: "Edit transaction" }).addEventListener("click", () => this.openTransactionModal(transaction));
+    const details = card.createDiv({ cls: "obsidian-finance-reference-details" });
+
+    if (kind === "transaction") {
+      const transaction = data.transactions.find((item) => item.id === itemId);
+      if (!transaction) { element.empty(); element.createDiv({ text: "Transaction reference not found.", cls: "obsidian-finance-muted" }); return; }
+      heading.createEl("strong", { text: transactionLabel(transaction.type) });
+      heading.createSpan({ text: displayDate(transaction.date, data.settings.calendar) });
+      const accountName = isTransferTransaction(transaction)
+        ? `${data.accounts.find((account) => account.id === transaction.fromAccountId)?.name ?? "Unknown"} → ${data.accounts.find((account) => account.id === transaction.toAccountId)?.name ?? "Unknown"}`
+        : data.accounts.find((account) => account.id === transaction.accountId)?.name ?? "Unknown";
+      details.createEl("strong", { text: isTransferTransaction(transaction) ? formatMoney(transaction.sourceAmountMinor, transaction.sourceCurrency, data.settings.locale) : formatMoney(transaction.amountMinor, transaction.currency, data.settings.locale) });
+      details.createSpan({ text: `${accountName}${!isTransferTransaction(transaction) && transaction.payee ? ` · ${transaction.payee}` : ""}` });
+      addIconButton(heading, "pencil", "Edit transaction", () => this.openTransactionModal(transaction));
+      return;
+    }
+
+    if (kind === "account") {
+      const account = data.accounts.find((item) => item.id === itemId);
+      if (!account) { element.empty(); element.createDiv({ text: "Account reference not found.", cls: "obsidian-finance-muted" }); return; }
+      heading.createEl("strong", { text: account.kind === "credit-card" ? "Credit card" : "Account" });
+      heading.createSpan({ text: account.currency });
+      details.createEl("strong", { text: account.name });
+      details.createSpan({ text: `${account.kind}${account.archived ? " · archived" : ""}` });
+      addIconButton(heading, "pencil", "Edit account", () => this.openAccountModal(account));
+      return;
+    }
+
+    if (kind === "category") {
+      const category = data.categories.find((item) => item.id === itemId);
+      if (!category) { element.empty(); element.createDiv({ text: "Category reference not found.", cls: "obsidian-finance-muted" }); return; }
+      heading.createEl("strong", { text: "Category" });
+      heading.createSpan({ text: category.type });
+      details.createEl("strong", { text: category.name });
+      if (category.archived) details.createSpan({ text: "Archived" });
+      addIconButton(heading, "pencil", "Edit category", () => this.openCategoryModal(category));
+      return;
+    }
+
+    if (kind === "budget") {
+      const budget = data.budgets.find((item) => item.id === itemId);
+      if (!budget) { element.empty(); element.createDiv({ text: "Budget reference not found.", cls: "obsidian-finance-muted" }); return; }
+      heading.createEl("strong", { text: "Budget" });
+      heading.createSpan({ text: `${budget.month} · ${budget.calendar}` });
+      details.createEl("strong", { text: formatMoney(budget.amountMinor, budget.currency, data.settings.locale) });
+      details.createSpan({ text: categoryName(data.categories, budget.categoryId) });
+      addIconButton(heading, "pencil", "Edit budget", () => this.openBudgetModal(budget));
+      return;
+    }
+
+    if (kind === "recurring") {
+      const rule = data.recurringRules.find((item) => item.id === itemId);
+      if (!rule) { element.empty(); element.createDiv({ text: "Recurring reference not found.", cls: "obsidian-finance-muted" }); return; }
+      heading.createEl("strong", { text: "Recurring" });
+      heading.createSpan({ text: rule.active ? "Active" : "Paused" });
+      details.createEl("strong", { text: formatMoney(rule.amountMinor, rule.currency, data.settings.locale) });
+      details.createSpan({ text: `${rule.description} · ${rule.frequency} · next ${displayDate(rule.nextDueDate, rule.calendar)}` });
+      addIconButton(heading, "pencil", "Edit recurring item", () => this.openRecurringRuleModal(rule));
+      return;
+    }
+
+    element.empty();
+    element.createDiv({ text: "Finance reference not found.", cls: "obsidian-finance-muted" });
   }
 
   async insertTransactionReference(transactionId: string): Promise<void> {

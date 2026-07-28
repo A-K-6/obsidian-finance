@@ -12,7 +12,7 @@ Vault Finance is a private, local-first personal finance manager for [Obsidian](
 - Gregorian and Persian calendar display and arithmetic
 - Credit-card statements, minimum payments, utilization, and reminders
 - Right-sidebar dashboard plus a normal Planning tab
-- Searchable history and stable transaction references in Markdown notes
+- Searchable history and compact references for transactions, accounts, categories, budgets, and recurring items
 - Integer minor-unit money with overflow checks
 - Desktop and mobile support through native Obsidian APIs
 - No network requests, telemetry, bank syncing, system notifications, or silent actions
@@ -42,6 +42,7 @@ Credit-card-only fields are shown only when the account type is Credit card:
 - Payment due day (1–31)
 - Statement balance
 - Minimum payment
+- Statement due date
 
 Days that do not exist in a shorter month clamp to that month's final day. Statement and minimum-payment amounts use the card account's currency, and the minimum payment cannot exceed the statement balance. Current utilization is calculated from current amount owed divided by credit limit; it is not a saved duplicate total.
 
@@ -109,15 +110,33 @@ Money is stored as safe integer minor units rather than floating-point values. F
 
 Open **Vault Finance: Open transaction history** to search descriptions, category names, and notes; filter by type; edit or delete; and add a transaction reference to a note.
 
-A reference uses the stable transaction ID:
+Use **Insert finance reference** from the Command Palette to search transactions, accounts, categories, budgets, and recurring items. Credit cards are included as credit-card accounts, while a recurring reference includes its next upcoming date.
+
+References use stable record IDs:
 
 ````markdown
 ```vault-finance
 transaction: transaction-id
 ```
+
+```vault-finance
+account: account-id
+```
+
+```vault-finance
+category: category-id
+```
+
+```vault-finance
+budget: budget-id
+```
+
+```vault-finance
+recurring: recurring-rule-id
+```
 ````
 
-Reading view renders current transaction details, so later edits are reflected without duplicating financial data into the note.
+Reading view renders a compact card with current details, so later edits are reflected without duplicating finance data into the note.
 
 ## Commands and hotkeys
 
@@ -128,7 +147,7 @@ Vault Finance registers:
 - **Open planning**
 - **Add transaction**
 - **Add account**
-- **Insert transaction reference**
+- **Insert finance reference**
 
 Assign optional hotkeys under **Settings → Hotkeys**. No default hotkeys are claimed.
 
@@ -156,7 +175,7 @@ Back up your vault before any major plugin upgrade.
 
 ## Settings compatibility
 
-Settings include default currency, display locale, calendar, first day of week, default account, and account management. Vault Finance uses Obsidian's declarative settings definitions on Obsidian 1.13 and later and retains the existing imperative `display()` fallback for supported Obsidian versions before 1.13. Deprecation warnings for the compatibility fallback may appear during development.
+Settings include default currency, display locale, calendar, first day of week, default account, and account management. Vault Finance uses Obsidian's declarative settings definitions on Obsidian 1.13 and later and retains the existing imperative `display()` fallback for supported Obsidian versions before 1.13.
 
 ## Data storage and privacy
 
@@ -208,7 +227,7 @@ https://github.com/A-K-6/obsidian-finance
 
 - Minimum Obsidian version: **1.7.2**
 - Desktop-only: **No**
-- Current plugin version: **2.0.0**
+- Current plugin version: **2.1.0**
 
 ## Deliberate limitations
 
