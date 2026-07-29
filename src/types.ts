@@ -38,6 +38,7 @@ export interface Category {
   id: string;
   name: string;
   type: CategoryType;
+  parentCategoryId?: string;
   archived: boolean;
   createdAt: string;
   updatedAt: string;
@@ -128,7 +129,7 @@ export interface FinanceData {
 }
 
 export const DEFAULT_DATA: FinanceData = {
-  schemaVersion: 3,
+  schemaVersion: 4,
   settings: {
     locale: "en-US",
     weekStartsOn: 1,

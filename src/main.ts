@@ -12,6 +12,7 @@ import {
   setIcon
 } from "obsidian";
 import { budgetStatuses, safeAddMinor } from "@/domain/budgets";
+import { categoryLabel, categoryOptionEntries, orderedCategories, parentCategoryOptionEntries } from "@/domain/categories";
 import {
   addCalendarPeriod,
   calendarMonthKey,
@@ -67,9 +68,7 @@ function accountOptions(accounts: Account[], predicate: (account: Account) => bo
 }
 
 function categoryOptions(categories: Category[], type: CategoryType, includeArchivedId?: string): Record<string, string> {
-  return Object.fromEntries(categories
-    .filter((category) => category.type === type && (!category.archived || category.id === includeArchivedId))
-    .map((category) => [category.id, `${category.name}${category.archived ? " — archived" : ""}`]));
+  return Object.fromEntries(categoryOptionEntries(categories, type, includeArchivedId));
 }
 
 function addIconButton(container: HTMLElement, icon: string, label: string, action: () => void): void {
@@ -107,7 +106,7 @@ function displayDate(canonical: string, calendar: CalendarSystem): string {
 }
 
 function categoryName(categories: Category[], categoryId?: string): string {
-  return categories.find((category) => category.id === categoryId)?.name ?? "Uncategorized";
+  return categoryLabel(categories, categoryId);
 }
 
 function scheduledKindLabel(kind: ScheduledItemKind): string {
@@ -291,8 +290,8 @@ class PlanningView extends FinanceView {
     header.createEl("h2", { text: "Planning" });
     const help = container.createEl("details", { cls: "obsidian-finance-card obsidian-finance-planning-help" });
     help.createEl("summary", { text: "What do these planning terms mean?" });
-    help.createEl("p", { text: "Category: a reusable label for income or spending, such as groceries or salary. Categories keep similar transactions together." });
-    help.createEl("p", { text: "Budget: a spending limit for one expense category, currency, calendar, and month. It compares the limit with recorded spending minus refunds." });
+    help.createEl("p", { text: "Category: a reusable income or spending label. A root category can have one level of subcategories, shown as parent › child." });
+    help.createEl("p", { text: "Budget: a spending limit for one expense category, currency, calendar, and month. A root budget includes its direct subcategories; a subcategory budget includes only itself. Spending is reduced by refunds." });
     help.createEl("p", { text: "Scheduled item: a bill, subscription, or recurring income schedule. Only its next occurrence can require attention, and it never posts automatically." });
     help.createEl("p", { text: "Credit card: an account whose balance is the amount owed. The plugin tracks utilization, statement details, and reminders, but never initiates payments." });
     help.createEl("p", { text: "Needs attention: an overdue, due, or reminder-window scheduled occurrence plus card dates in the planning window. They are reminders, not posted transactions." });
@@ -306,11 +305,12 @@ class PlanningView extends FinanceView {
     budgetActions.createEl("button", { text: "Add category" }).addEventListener("click", () => this.plugin.openCategoryModal());
     const month = calendarMonthKey(today, data.settings.calendar);
     budgetsSection.createEl("p", { text: `Calendar month ${month}. Each currency is calculated separately.`, cls: "obsidian-finance-muted" });
-    const statuses = budgetStatuses(data.budgets, data.transactions, data.settings.calendar, month);
+    const statuses = budgetStatuses(data.budgets, data.transactions, data.categories, data.settings.calendar, month);
     if (statuses.length === 0) budgetsSection.createEl("p", { text: "No budgets for this month." });
     for (const status of statuses) {
       const row = budgetsSection.createDiv({ cls: "obsidian-finance-card" });
       row.createEl("h4", { text: categoryName(data.categories, status.budget.categoryId) });
+      if (status.includesSubcategories) row.createEl("p", { text: "Includes subcategories", cls: "obsidian-finance-muted" });
       row.createEl("p", { text: `Budget ${formatMoney(status.budget.amountMinor, status.budget.currency, data.settings.locale)}` });
       row.createEl("p", { text: `Spent ${formatMoney(status.spentMinor, status.budget.currency, data.settings.locale)}` });
       row.createEl("p", { text: `Remaining ${formatMoney(status.remainingMinor, status.budget.currency, data.settings.locale)}` });
@@ -331,11 +331,17 @@ class PlanningView extends FinanceView {
 
     const categoryList = budgetsSection.createEl("details");
     categoryList.createEl("summary", { text: "Manage categories" });
-    for (const category of data.categories) {
-      const row = categoryList.createDiv({ cls: "obsidian-finance-compact-row" });
-      row.createSpan({ text: `${category.name} — ${category.type}${category.archived ? " — archived" : ""}` });
-      row.createEl("button", { text: "Edit" }).addEventListener("click", () => this.plugin.openCategoryModal(category));
-      if (!category.archived) row.createEl("button", { text: "Archive" }).addEventListener("click", () => new ConfirmModal(this.app, "Archive category?", "Existing transactions keep this category. Related scheduled items are paused.", "Archive category", async () => this.plugin.store.archiveCategory(category.id)).open());
+    for (const type of ["expense", "income"] as const) {
+      categoryList.createEl("h4", { text: type === "expense" ? "Expense and refund" : "Income" });
+      for (const category of orderedCategories(data.categories, type)) {
+        const parent = data.categories.find((item) => item.id === category.parentCategoryId);
+        const row = categoryList.createDiv({ cls: `obsidian-finance-compact-row${parent ? " obsidian-finance-subcategory-row" : ""}` });
+        row.createSpan({ text: parent
+          ? `${category.name} — subcategory of ${parent.name}${category.archived ? " — archived" : ""}`
+          : `${category.name} — root category${category.archived ? " — archived" : ""}` });
+        row.createEl("button", { text: "Edit" }).addEventListener("click", () => this.plugin.openCategoryModal(category));
+        if (!category.archived) row.createEl("button", { text: "Archive" }).addEventListener("click", () => new ConfirmModal(this.app, "Archive category?", "Existing transactions keep this category. Related scheduled items are paused. Active subcategories must be archived first.", "Archive category", async () => this.plugin.store.archiveCategory(category.id)).open());
+      }
     }
 
     const scheduledSection = container.createDiv({ cls: "obsidian-finance-section" });
@@ -350,6 +356,7 @@ class PlanningView extends FinanceView {
       const row = scheduledSection.createDiv({ cls: "obsidian-finance-card" });
       row.createEl("h4", { text: rule.description });
       row.createEl("p", { text: `${scheduledKindLabel(rule.kind)} · every ${rule.interval} ${recurrenceUnit(rule.frequency, rule.interval)} · ${formatMoney(rule.amountMinor, rule.currency, data.settings.locale)}` });
+      row.createEl("p", { text: `Category ${categoryName(data.categories, rule.categoryId)}` });
       row.createEl("p", { text: `Next due ${displayDate(rule.nextDueDate, rule.calendar)} · ${status}` });
       if (completed) row.createEl("p", { text: "Completed safely. Edit the end date or occurrence limit to continue this schedule.", cls: "obsidian-finance-muted" });
       const actions = row.createDiv({ cls: "obsidian-finance-actions" });
@@ -389,7 +396,7 @@ class PlanningView extends FinanceView {
       if (!rule) continue;
       const row = upcomingSection.createDiv({ cls: "obsidian-finance-card" });
       row.createEl("h4", { text: rule.description });
-      row.createEl("p", { text: `${occurrence.due ? "Due" : "Reminder"} ${displayDate(occurrence.date, rule.calendar)} · ${formatMoney(rule.amountMinor, rule.currency, data.settings.locale)}` });
+      row.createEl("p", { text: `${occurrence.due ? "Due" : "Reminder"} ${displayDate(occurrence.date, rule.calendar)} · ${formatMoney(rule.amountMinor, rule.currency, data.settings.locale)} · ${categoryName(data.categories, rule.categoryId)}` });
       row.createEl("p", { text: "Manual confirmation required. Record opens a review form; no money is posted until save transaction.", cls: "obsidian-finance-muted" });
       const actions = row.createDiv({ cls: "obsidian-finance-actions" });
       actions.createEl("button", { text: "Record", cls: "mod-cta" }).addEventListener("click", () => this.plugin.openRecurringOccurrence(rule, occurrence.date));
@@ -572,7 +579,7 @@ class TransactionModal extends Modal {
     this.contentEl.empty();
     this.contentEl.createEl("h2", { text: this.recurring ? "Confirm scheduled transaction" : this.transaction ? "Edit transaction" : "Add transaction" });
     if (this.recurring) this.contentEl.createEl("p", { text: "Review the prefilled transaction. It is created only after you select save transaction; the schedule never posts automatically.", cls: "obsidian-finance-muted" });
-    if (this.showAdvanced && !this.recurring) new Setting(this.contentEl).setName("Type").addDropdown((dropdown) => dropdown.addOptions(Object.fromEntries(TRANSACTION_TYPES.map((type) => [type, transactionLabel(type)]))).setValue(this.type).onChange((value) => { this.type = value as TransactionType; this.render(); }));
+    if (this.showAdvanced && !this.recurring) new Setting(this.contentEl).setName("Type").addDropdown((dropdown) => dropdown.addOptions(Object.fromEntries(TRANSACTION_TYPES.map((type) => [type, transactionLabel(type)]))).setValue(this.type).onChange((value) => { this.type = value as TransactionType; this.categoryId = ""; this.render(); }));
     if (this.showAdvanced) new Setting(this.contentEl).setName(`Date (${this.plugin.store.snapshot().settings.calendar === "persian" ? "Persian" : "Gregorian"} YYYY-MM-DD)`).addText((text) => text.setValue(this.date).onChange((value) => this.date = value));
     if (this.type === "transfer" || this.type === "card-payment") this.renderTransferFields(accounts);
     else this.renderSimpleFields(accounts);
@@ -670,18 +677,34 @@ class TransactionModal extends Modal {
 class CategoryModal extends Modal {
   private name: string;
   private type: CategoryType;
+  private parentCategoryId: string;
   private isSaving = false;
 
   constructor(app: App, private readonly plugin: VaultFinancePlugin, private readonly category?: Category) {
     super(app);
     this.name = category?.name ?? "";
     this.type = category?.type ?? "expense";
+    this.parentCategoryId = category?.parentCategoryId ?? "";
   }
 
-  onOpen(): void {
+  onOpen(): void { this.render(); }
+
+  private render(): void {
+    const categories = this.plugin.store.snapshot().categories;
+    const parent = categories.find((item) => item.id === this.parentCategoryId);
+    if (parent && (parent.type !== this.type || parent.parentCategoryId !== undefined || parent.id === this.category?.id)) this.parentCategoryId = "";
+    this.contentEl.empty();
     this.contentEl.createEl("h2", { text: this.category ? "Edit category" : "Add category" });
     new Setting(this.contentEl).setName("Name").addText((text) => text.setValue(this.name).onChange((value) => this.name = value));
-    new Setting(this.contentEl).setName("Type").addDropdown((dropdown) => dropdown.addOptions({ expense: "Expense and refund", income: "Income" }).setValue(this.type).onChange((value) => this.type = value as CategoryType));
+    new Setting(this.contentEl).setName("Type").addDropdown((dropdown) => dropdown
+      .addOptions({ expense: "Expense and refund", income: "Income" })
+      .setValue(this.type)
+      .onChange((value) => { this.type = value as CategoryType; this.parentCategoryId = ""; this.render(); }));
+    const parentOptions = Object.fromEntries(parentCategoryOptionEntries(categories, this.type, this.category?.id, this.parentCategoryId || undefined));
+    new Setting(this.contentEl)
+      .setName("Parent category (optional)")
+      .setDesc("Choose none for a root category. Subcategories can be only one level deep and must have the same type as their active parent.")
+      .addDropdown((dropdown) => dropdown.addOption("", "None").addOptions(parentOptions).setValue(this.parentCategoryId).onChange((value) => this.parentCategoryId = value));
     const footer = this.contentEl.createDiv({ cls: "modal-button-container" });
     footer.createEl("button", { text: "Cancel" }).addEventListener("click", () => this.close());
     footer.createEl("button", { text: "Save category", cls: "mod-cta" }).addEventListener("click", () => void this.save());
@@ -692,7 +715,11 @@ class CategoryModal extends Modal {
     this.isSaving = true;
     const now = new Date().toISOString();
     try {
-      await this.plugin.store.upsertCategory({ id: this.category?.id ?? id(), name: this.name.trim(), type: this.type, archived: this.category?.archived ?? false, createdAt: this.category?.createdAt ?? now, updatedAt: now });
+      await this.plugin.store.upsertCategory({
+        id: this.category?.id ?? id(), name: this.name.trim(), type: this.type,
+        parentCategoryId: this.parentCategoryId || undefined,
+        archived: this.category?.archived ?? false, createdAt: this.category?.createdAt ?? now, updatedAt: now
+      });
       new Notice("Category saved");
       this.close();
     } catch (error) {
@@ -723,7 +750,10 @@ class BudgetModal extends Modal {
   onOpen(): void {
     const data = this.plugin.store.snapshot();
     this.contentEl.createEl("h2", { text: this.budget ? "Edit budget" : "Add budget" });
-    new Setting(this.contentEl).setName("Expense category").addDropdown((dropdown) => dropdown.addOptions(categoryOptions(data.categories, "expense", this.categoryId)).setValue(this.categoryId).onChange((value) => this.categoryId = value));
+    new Setting(this.contentEl)
+      .setName("Expense category")
+      .setDesc("Includes subcategories when a root category is selected. A subcategory budget includes only itself.")
+      .addDropdown((dropdown) => dropdown.addOptions(categoryOptions(data.categories, "expense", this.categoryId)).setValue(this.categoryId).onChange((value) => this.categoryId = value));
     new Setting(this.contentEl).setName("Currency").setDesc("Spending is matched only in this currency.").addDropdown((dropdown) => dropdown.addOptions(currencyOptions()).setValue(this.currency).onChange((value) => { this.currency = value; this.amount = ""; }));
     new Setting(this.contentEl).setName("Calendar").addDropdown((dropdown) => dropdown.addOptions({ gregorian: "Gregorian", persian: "Persian" }).setValue(this.calendar).onChange((value) => { this.calendar = value as CalendarSystem; this.month = calendarMonthKey(todayCanonical(), this.calendar); }));
     new Setting(this.contentEl).setName("Calendar month").setDesc("Use yyyy-mm in the selected calendar.").addText((text) => text.setValue(this.month).onChange((value) => this.month = value));
@@ -962,9 +992,9 @@ class TransactionReferenceModal extends SuggestModal<FinanceReferenceSuggestion>
         return ["transaction", transaction.date, formatCalendarDate(transaction.date, data.settings.calendar), transaction.type, transaction.note ?? "", ...accountNames, ...details].some((value) => value.toLowerCase().includes(normalized));
       }
       if (suggestion.kind === "account") return ["account", suggestion.item.kind, suggestion.item.name, suggestion.item.currency].some((value) => value.toLowerCase().includes(normalized));
-      if (suggestion.kind === "category") return ["category", suggestion.item.type, suggestion.item.name].some((value) => value.toLowerCase().includes(normalized));
+      if (suggestion.kind === "category") return ["category", suggestion.item.type, categoryName(data.categories, suggestion.item.id)].some((value) => value.toLowerCase().includes(normalized));
       if (suggestion.kind === "budget") return ["budget", suggestion.item.month, suggestion.item.calendar, suggestion.item.currency, categoryName(data.categories, suggestion.item.categoryId)].some((value) => value.toLowerCase().includes(normalized));
-      return ["scheduled", "scheduled item", "recurring", scheduledKindLabel(suggestion.item.kind), suggestion.item.description, suggestion.item.frequency, suggestion.item.currency]
+      return ["scheduled", "scheduled item", "recurring", scheduledKindLabel(suggestion.item.kind), suggestion.item.description, suggestion.item.frequency, suggestion.item.currency, categoryName(data.categories, suggestion.item.categoryId)]
         .some((value) => value.toLowerCase().includes(normalized));
     });
   }
@@ -978,19 +1008,19 @@ class TransactionReferenceModal extends SuggestModal<FinanceReferenceSuggestion>
         : data.accounts.find((account) => account.id === transaction.accountId)?.name ?? "Unknown";
       const amount = isTransferTransaction(transaction) ? formatMoney(transaction.sourceAmountMinor, transaction.sourceCurrency, data.settings.locale) : formatMoney(transaction.amountMinor, transaction.currency, data.settings.locale);
       element.createDiv({ text: `${transactionLabel(transaction.type)} · ${amount}` });
-      element.createEl("small", { text: `${displayDate(transaction.date, data.settings.calendar)} · ${accountName}` });
+      element.createEl("small", { text: `${displayDate(transaction.date, data.settings.calendar)} · ${accountName}${isTransferTransaction(transaction) ? "" : ` · ${categoryName(data.categories, transaction.categoryId)}`}` });
     } else if (suggestion.kind === "account") {
       element.createDiv({ text: `${suggestion.item.kind === "credit-card" ? "Credit card" : "Account"} · ${suggestion.item.name}` });
       element.createEl("small", { text: `${suggestion.item.kind} · ${suggestion.item.currency}` });
     } else if (suggestion.kind === "category") {
-      element.createDiv({ text: `Category · ${suggestion.item.name}` });
+      element.createDiv({ text: `Category · ${categoryName(data.categories, suggestion.item.id)}` });
       element.createEl("small", { text: `${suggestion.item.type}${suggestion.item.archived ? " · archived" : ""}` });
     } else if (suggestion.kind === "budget") {
       element.createDiv({ text: `Budget · ${categoryName(data.categories, suggestion.item.categoryId)}` });
       element.createEl("small", { text: `${suggestion.item.month} · ${formatMoney(suggestion.item.amountMinor, suggestion.item.currency, data.settings.locale)}` });
     } else {
       element.createDiv({ text: `Scheduled item · ${suggestion.item.description}` });
-      element.createEl("small", { text: `${scheduledKindLabel(suggestion.item.kind)} · every ${suggestion.item.interval} ${recurrenceUnit(suggestion.item.frequency, suggestion.item.interval)} · next ${displayDate(suggestion.item.nextDueDate, suggestion.item.calendar)}` });
+      element.createEl("small", { text: `${scheduledKindLabel(suggestion.item.kind)} · ${categoryName(data.categories, suggestion.item.categoryId)} · every ${suggestion.item.interval} ${recurrenceUnit(suggestion.item.frequency, suggestion.item.interval)} · next ${displayDate(suggestion.item.nextDueDate, suggestion.item.calendar)}` });
     }
   }
 
@@ -1160,7 +1190,7 @@ export default class VaultFinancePlugin extends Plugin {
         ? `${data.accounts.find((account) => account.id === transaction.fromAccountId)?.name ?? "Unknown"} → ${data.accounts.find((account) => account.id === transaction.toAccountId)?.name ?? "Unknown"}`
         : data.accounts.find((account) => account.id === transaction.accountId)?.name ?? "Unknown";
       details.createEl("strong", { text: isTransferTransaction(transaction) ? formatMoney(transaction.sourceAmountMinor, transaction.sourceCurrency, data.settings.locale) : formatMoney(transaction.amountMinor, transaction.currency, data.settings.locale) });
-      details.createSpan({ text: `${accountName}${!isTransferTransaction(transaction) && transaction.payee ? ` · ${transaction.payee}` : ""}` });
+      details.createSpan({ text: `${accountName}${!isTransferTransaction(transaction) ? ` · ${categoryName(data.categories, transaction.categoryId)}${transaction.payee ? ` · ${transaction.payee}` : ""}` : ""}` });
       addIconButton(heading, "pencil", "Edit transaction", () => this.openTransactionModal(transaction));
       return;
     }
@@ -1181,7 +1211,7 @@ export default class VaultFinancePlugin extends Plugin {
       if (!category) { element.empty(); element.createDiv({ text: "Category reference not found.", cls: "obsidian-finance-muted" }); return; }
       heading.createEl("strong", { text: "Category" });
       heading.createSpan({ text: category.type });
-      details.createEl("strong", { text: category.name });
+      details.createEl("strong", { text: categoryName(data.categories, category.id) });
       if (category.archived) details.createSpan({ text: "Archived" });
       addIconButton(heading, "pencil", "Edit category", () => this.openCategoryModal(category));
       return;
@@ -1204,7 +1234,7 @@ export default class VaultFinancePlugin extends Plugin {
       heading.createEl("strong", { text: "Scheduled item" });
       heading.createSpan({ text: isRecurringRuleCompleted(rule, data.recurringResolutions) ? "Completed" : rule.active ? "Active" : "Paused" });
       details.createEl("strong", { text: formatMoney(rule.amountMinor, rule.currency, data.settings.locale) });
-      details.createSpan({ text: `${rule.description} · ${scheduledKindLabel(rule.kind)} · every ${rule.interval} ${recurrenceUnit(rule.frequency, rule.interval)} · next ${displayDate(rule.nextDueDate, rule.calendar)}` });
+      details.createSpan({ text: `${rule.description} · ${categoryName(data.categories, rule.categoryId)} · ${scheduledKindLabel(rule.kind)} · every ${rule.interval} ${recurrenceUnit(rule.frequency, rule.interval)} · next ${displayDate(rule.nextDueDate, rule.calendar)}` });
       addIconButton(heading, "pencil", "Edit scheduled item", () => this.openRecurringRuleModal(rule));
       return;
     }

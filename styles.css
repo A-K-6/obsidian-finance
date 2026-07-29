@@ -182,6 +182,11 @@
   flex: 1 1 220px;
 }
 
+.obsidian-finance-subcategory-row {
+  padding-left: var(--size-4-6);
+  border-left: 2px solid var(--background-modifier-border);
+}
+
 .obsidian-finance-section details {
   margin-top: var(--size-4-4);
 }

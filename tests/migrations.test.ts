@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { FinanceStore } from "@/store/finance-store";
+import { migrateSchema } from "@/store/migrations";
 import type { FinanceData } from "@/types";
 
 const timestamp = "2026-07-01T00:00:00.000Z";
@@ -29,18 +30,25 @@ const v2 = {
   recurringResolutions: [{ id: "resolution-salary-2026-07-31", ruleId: "salary", occurrenceDate: "2026-07-31", action: "skipped", resolvedAt: timestamp }],
   transactions: []
 };
+const v3 = {
+  ...v2,
+  schemaVersion: 3,
+  accounts: [{ ...v1.accounts[0], institution: "Preserve account field" }],
+  categories: [{ ...v2.categories[0], color: "preserve category field", parentCategoryId: "legacy-extension-value" }],
+  recurringRules: [{ ...v2Rule, kind: "recurring-income", interval: 1, reminderLeadDays: 0, customRuleField: "preserve rule field" }]
+};
 
-describe("sequential schema migration to v3", () => {
-  it("migrates v1 through v2 to v3 while preserving financial records exactly", async () => {
+describe("sequential schema migration to v4", () => {
+  it("migrates v1 through every schema step while preserving financial records exactly", async () => {
     const save = vi.fn(async (_data: FinanceData) => undefined);
     const store = new FinanceStore(save);
     await store.load(v1);
     const data = store.snapshot();
-    expect(data.schemaVersion).toBe(3);
+    expect(data.schemaVersion).toBe(4);
     expect(data.settings.calendar).toBe("gregorian");
     expect(data.accounts[0]).toEqual(v1.accounts[0]);
     expect(data.transactions.map((item) => ({ id: item.id, date: item.date, createdAt: item.createdAt, updatedAt: item.updatedAt }))).toEqual(v1.transactions.map((item) => ({ id: item.id, date: item.date, createdAt: item.createdAt, updatedAt: item.updatedAt })));
-    expect(data.categories.map((item) => [item.name, item.type])).toEqual([["  Groceries  ", "expense"], ["Salary", "income"]]);
+    expect(data.categories.map((item) => [item.name, item.type, item.parentCategoryId])).toEqual([["  Groceries  ", "expense", undefined], ["Salary", "income", undefined]]);
     const expense = data.transactions[0];
     const refund = data.transactions[1];
     expect("categoryId" in expense && "categoryId" in refund ? expense.categoryId : undefined).toBe("categoryId" in refund ? refund.categoryId : undefined);
@@ -48,13 +56,13 @@ describe("sequential schema migration to v3", () => {
     expect(save).toHaveBeenCalledOnce();
   });
 
-  it("preserves v2 collection keys, rules, resolutions, and adds only safe schedule defaults", async () => {
+  it("preserves v2 rules and resolutions while adding only sequential safe defaults", async () => {
     const save = vi.fn(async (_data: FinanceData) => undefined);
     const store = new FinanceStore(save);
     await store.load(v2);
     const data = store.snapshot();
-    expect(data.schemaVersion).toBe(3);
-    expect(data.recurringRules).toHaveLength(1);
+    expect(data.schemaVersion).toBe(4);
+    expect(data.categories[0]?.parentCategoryId).toBeUndefined();
     expect(data.recurringRules[0]).toMatchObject({ ...v2Rule, kind: "recurring-income", interval: 1, reminderLeadDays: 0 });
     expect(data.recurringResolutions).toEqual(v2.recurringResolutions);
     expect(Object.prototype.hasOwnProperty.call(save.mock.calls[0]?.[0] ?? {}, "recurringRules")).toBe(true);
@@ -63,10 +71,30 @@ describe("sequential schema migration to v3", () => {
     expect(save).toHaveBeenCalledOnce();
   });
 
-  it("loads persisted v3 idempotently without saving again", async () => {
+  it("preserves a v3 extension field without interpreting it as hierarchy", () => {
+    const result = migrateSchema(v3);
+    expect(result.migrated).toBe(true);
+    expect(result.data).toEqual({
+      ...v3,
+      schemaVersion: 4,
+      categories: [{ ...v2.categories[0], color: "preserve category field", legacyV3ParentCategoryId: "legacy-extension-value" }]
+    });
+  });
+
+  it("preserves every entity field when loading and saving v3", async () => {
+    const save = vi.fn(async (_data: FinanceData) => undefined);
+    const store = new FinanceStore(save);
+    await store.load(v3);
+    expect(store.snapshot().accounts[0]).toEqual(v3.accounts[0]);
+    expect(store.snapshot().categories[0]).toEqual({ ...v2.categories[0], color: "preserve category field", legacyV3ParentCategoryId: "legacy-extension-value" });
+    expect(store.snapshot().recurringRules[0]).toEqual(v3.recurringRules[0]);
+    expect(save).toHaveBeenCalledOnce();
+  });
+
+  it("loads persisted v4 idempotently without saving again", async () => {
     let migrated: unknown;
     const first = new FinanceStore(async (data) => { migrated = data; });
-    await first.load(v2);
+    await first.load(v3);
     const save = vi.fn(async () => undefined);
     const second = new FinanceStore(save);
     await second.load(migrated);
@@ -78,6 +106,6 @@ describe("sequential schema migration to v3", () => {
     const store = new FinanceStore(async () => { throw new Error("disk full"); });
     await expect(store.load(v1)).rejects.toThrow("disk full");
     expect(store.snapshot().accounts).toEqual([]);
-    expect(store.snapshot().schemaVersion).toBe(3);
+    expect(store.snapshot().schemaVersion).toBe(4);
   });
 });

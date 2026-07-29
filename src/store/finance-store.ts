@@ -50,13 +50,13 @@ export class FinanceStore {
     }
     if (!isRecord(raw)) throw new Error("Finance data is not a valid object. Restore data.json from a backup.");
     const sourceVersion = raw.schemaVersion ?? 1;
-    if (typeof sourceVersion !== "number" || sourceVersion < 1 || sourceVersion > 3) {
+    if (typeof sourceVersion !== "number" || sourceVersion < 1 || sourceVersion > 4) {
       const versionLabel = typeof sourceVersion === "string" || typeof sourceVersion === "number" ? sourceVersion : "unknown";
       throw new Error(`Finance data uses unsupported schema version ${versionLabel}. Update the plugin before continuing.`);
     }
 
     const migration = migrateSchema(raw);
-    if (!isRecord(migration.data) || migration.data.schemaVersion !== 3) throw new Error("Finance data could not be migrated to schema version 3.");
+    if (!isRecord(migration.data) || migration.data.schemaVersion !== 4) throw new Error("Finance data could not be migrated to schema version 4.");
     const decoded = this.decodeData(migration.data);
     if (migration.migrated) await this.saveData(clone(decoded));
     this.data = decoded;
@@ -120,12 +120,17 @@ export class FinanceStore {
     await this.mutate((draft) => {
       this.validateCategory(category);
       const existing = draft.categories.find((item) => item.id === category.id);
+      const proposed = draft.categories.filter((item) => item.id !== category.id);
+      proposed.push(clone(category));
+      this.validateCategoryHierarchy(proposed);
       const used = draft.transactions.some((transaction) => !isTransferTransaction(transaction) && transaction.categoryId === category.id)
         || draft.budgets.some((budget) => budget.categoryId === category.id)
         || draft.recurringRules.some((rule) => rule.categoryId === category.id);
       if (existing && used && existing.type !== category.type) throw new Error("Category type cannot change while it is in use.");
-      const duplicate = draft.categories.find((item) => item.id !== category.id && item.type === category.type && item.name.localeCompare(category.name, undefined, { sensitivity: "base" }) === 0);
-      if (duplicate) throw new Error("A category with this name and type already exists.");
+      const duplicate = draft.categories.find((item) => item.id !== category.id && item.type === category.type
+        && item.parentCategoryId === category.parentCategoryId
+        && item.name.localeCompare(category.name, undefined, { sensitivity: "base" }) === 0);
+      if (duplicate) throw new Error("A sibling category with this name and type already exists.");
       const index = draft.categories.findIndex((item) => item.id === category.id);
       if (index >= 0) draft.categories[index] = clone(category);
       else draft.categories.push(clone(category));
@@ -136,6 +141,9 @@ export class FinanceStore {
     await this.mutate((draft) => {
       const category = draft.categories.find((item) => item.id === categoryId);
       if (!category) return;
+      if (draft.categories.some((item) => item.parentCategoryId === categoryId && !item.archived)) {
+        throw new Error("Archive active subcategories before archiving their parent category.");
+      }
       category.archived = true;
       category.updatedAt = new Date().toISOString();
       for (const rule of draft.recurringRules.filter((item) => item.categoryId === categoryId)) rule.active = false;
@@ -325,6 +333,7 @@ export class FinanceStore {
     requireUniqueIds(accounts, "account");
     const categories = (raw.categories as unknown[]).map((value, index) => this.decodeCategory(value, index));
     requireUniqueIds(categories, "category");
+    this.validateCategoryHierarchy(categories);
     const allowedArchivedIds = new Set(accounts.filter((account) => account.archived).map((account) => account.id));
     const transactions = (raw.transactions as unknown[]).map((value, index) => this.decodeTransaction(value, index, accounts, categories, allowedArchivedIds));
     requireUniqueIds(transactions, "transaction");
@@ -337,7 +346,7 @@ export class FinanceStore {
     const resolutionKeys = recurringResolutions.map((item) => recurringOccurrenceKey(item.ruleId, item.occurrenceDate));
     if (new Set(resolutionKeys).size !== resolutionKeys.length) throw new Error("Finance data contains duplicate recurring occurrence resolutions.");
     return {
-      schemaVersion: 3,
+      schemaVersion: 4,
       settings: this.decodeSettings(raw.settings, accounts),
       accounts,
       categories,
@@ -362,10 +371,26 @@ export class FinanceStore {
   }
 
   private validateCategory(category: Category): void {
-    if (!category.id || !category.name.trim()) throw new Error("Category name is required.");
+    if (typeof category.id !== "string" || !category.id || typeof category.name !== "string" || !category.name.trim()) throw new Error("Category name is required.");
     if (category.type !== "expense" && category.type !== "income") throw new Error("Category type is invalid.");
+    if (category.parentCategoryId !== undefined && (typeof category.parentCategoryId !== "string" || !category.parentCategoryId)) {
+      throw new Error("Parent category identity is invalid.");
+    }
     if (typeof category.archived !== "boolean" || typeof category.createdAt !== "string" || typeof category.updatedAt !== "string") {
       throw new Error("Category metadata is invalid.");
+    }
+  }
+
+  private validateCategoryHierarchy(categories: Category[]): void {
+    for (const category of categories) {
+      this.validateCategory(category);
+      if (category.parentCategoryId === undefined) continue;
+      if (category.parentCategoryId === category.id) throw new Error("A category cannot be its own parent.");
+      const parent = categories.find((item) => item.id === category.parentCategoryId);
+      if (!parent) throw new Error(`Parent category for ${category.name} was not found.`);
+      if (parent.type !== category.type) throw new Error("Parent and subcategory types must match.");
+      if (parent.parentCategoryId !== undefined) throw new Error("Category hierarchy supports only one subcategory level.");
+      if (!category.archived && parent.archived) throw new Error("An active subcategory cannot use an archived parent category.");
     }
   }
 

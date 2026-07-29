@@ -85,6 +85,18 @@ function migrateV2ToV3(raw: Record<string, unknown>): Record<string, unknown> {
   return { ...raw, schemaVersion: 3, recurringRules };
 }
 
+function migrateV3ToV4(raw: Record<string, unknown>): Record<string, unknown> {
+  if (!Array.isArray(raw.categories)) {
+    throw new Error("Finance data is missing its categories list. Restore data.json from a backup.");
+  }
+  const categories = raw.categories.map((value: unknown): unknown => {
+    if (!isRecord(value) || !("parentCategoryId" in value)) return value;
+    const { parentCategoryId, ...category } = value;
+    return { ...category, legacyV3ParentCategoryId: parentCategoryId };
+  });
+  return { ...raw, schemaVersion: 4, categories };
+}
+
 export function migrateSchema(raw: unknown): MigrationResult {
   if (raw === null || raw === undefined || !isRecord(raw)) return { data: raw, migrated: false };
   let data = raw;
@@ -96,6 +108,10 @@ export function migrateSchema(raw: unknown): MigrationResult {
   }
   if (data.schemaVersion === 2) {
     data = migrateV2ToV3(data);
+    migrated = true;
+  }
+  if (data.schemaVersion === 3) {
+    data = migrateV3ToV4(data);
     migrated = true;
   }
   return { data, migrated };

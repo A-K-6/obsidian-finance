@@ -7,6 +7,7 @@ export interface BudgetStatus {
   spentMinor: number;
   remainingMinor: number;
   overspent: boolean;
+  includesSubcategories: boolean;
 }
 
 export function safeAddMinor(left: number, right: number): number {
@@ -25,21 +26,34 @@ export function validateBudget(budget: MonthlyBudget, categories: Category[]): v
   if (!Number.isSafeInteger(budget.amountMinor) || budget.amountMinor <= 0) throw new Error("Budget must be greater than zero.");
 }
 
-export function budgetStatus(budget: MonthlyBudget, transactions: FinanceTransaction[]): BudgetStatus {
+export function budgetStatus(budget: MonthlyBudget, transactions: FinanceTransaction[], categories: Category[]): BudgetStatus {
   const [start, end] = calendarMonthRange(budget.month, budget.calendar);
+  const category = categories.find((item) => item.id === budget.categoryId);
+  const includedCategoryIds = new Set([budget.categoryId]);
+  if (category && category.parentCategoryId === undefined) {
+    for (const child of categories.filter((item) => item.parentCategoryId === category.id)) includedCategoryIds.add(child.id);
+  }
+  const includesSubcategories = includedCategoryIds.size > 1;
   let spentMinor = 0;
   for (const transaction of transactions) {
-    if (isTransferTransaction(transaction) || transaction.currency !== budget.currency || transaction.categoryId !== budget.categoryId) continue;
+    if (isTransferTransaction(transaction) || transaction.currency !== budget.currency
+      || transaction.categoryId === undefined || !includedCategoryIds.has(transaction.categoryId)) continue;
     if (transaction.date < start || transaction.date > end) continue;
     if (transaction.type === "expense") spentMinor = safeAddMinor(spentMinor, transaction.amountMinor);
     if (transaction.type === "refund") spentMinor = safeAddMinor(spentMinor, -transaction.amountMinor);
   }
   const remainingMinor = safeAddMinor(budget.amountMinor, -spentMinor);
-  return { budget, spentMinor, remainingMinor, overspent: remainingMinor < 0 };
+  return { budget, spentMinor, remainingMinor, overspent: remainingMinor < 0, includesSubcategories };
 }
 
-export function budgetStatuses(budgets: MonthlyBudget[], transactions: FinanceTransaction[], calendar: MonthlyBudget["calendar"], month: string): BudgetStatus[] {
+export function budgetStatuses(
+  budgets: MonthlyBudget[],
+  transactions: FinanceTransaction[],
+  categories: Category[],
+  calendar: MonthlyBudget["calendar"],
+  month: string
+): BudgetStatus[] {
   return budgets
     .filter((budget) => budget.calendar === calendar && budget.month === month)
-    .map((budget) => budgetStatus(budget, transactions));
+    .map((budget) => budgetStatus(budget, transactions, categories));
 }

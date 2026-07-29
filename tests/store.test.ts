@@ -54,7 +54,7 @@ describe("FinanceStore", () => {
   it("rejects unsupported future schemas without overwriting them", async () => {
     const save = vi.fn(async () => undefined);
     const store = new FinanceStore(save);
-    await expect(store.load({ schemaVersion: 4, settings: {}, accounts: [], transactions: [] })).rejects.toThrow("unsupported schema version");
+    await expect(store.load({ schemaVersion: 5, settings: {}, accounts: [], transactions: [] })).rejects.toThrow("unsupported schema version");
     expect(save).not.toHaveBeenCalled();
   });
 });

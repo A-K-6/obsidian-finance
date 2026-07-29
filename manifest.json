@@ -1,9 +1,9 @@
 {
   "id": "vault-finance",
   "name": "Vault Finance",
-  "version": "3.0.0",
+  "version": "4.0.0",
   "minAppVersion": "1.7.2",
-  "description": "Plan budgets, scheduled items, credit cards, and multi-currency transactions locally.",
+  "description": "Plan hierarchical categories, budgets, scheduled items, cards, and transactions locally.",
   "author": "Jabama",
   "authorUrl": "https://github.com/A-K-6",
   "isDesktopOnly": false

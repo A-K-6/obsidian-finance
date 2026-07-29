@@ -1,12 +1,12 @@
 # Vault Finance
 
-Vault Finance is a private, local-first personal finance manager for [Obsidian](https://obsidian.md). Version 3 adds a simpler Scheduled items model for bills, subscriptions, and recurring income while preserving all version 1 and 2 finance data.
+Vault Finance is a private, local-first personal finance manager for [Obsidian](https://obsidian.md). Version 4 adds one-level subcategories and hierarchical budget planning while preserving all earlier finance data.
 
 ## Highlights
 
 - Cash, bank, and credit-card accounts
 - Expenses, income, refunds, transfers, and card payments
-- Reusable typed expense and income categories
+- Reusable typed expense and income categories with one level of subcategories
 - Monthly expense-category budgets, always separated by currency
 - Scheduled bills, subscriptions, and recurring income with flexible intervals and manual confirmation
 - Gregorian and Persian calendar display and arithmetic
@@ -26,7 +26,7 @@ Open **Vault Finance: Open planning** or select **Planning** on the dashboard fo
 - **Budgets:** current calendar-month Budget, Spent, Remaining, and textual **Overspent** or **Within budget** status.
 - **Scheduled items:** bill, subscription, and recurring-income schedules with Record, Skip, Reschedule, Pause, Resume, and Edit actions.
 - **Credit cards:** current amount owed, utilization, statement balance, minimum payment, and schedule details.
-- **Upcoming:** due and upcoming recurring occurrences plus card payment reminders.
+- **Upcoming:** actionable scheduled occurrences plus card payment reminders.
 
 Nothing in either view posts a transaction or initiates a payment automatically.
 
@@ -50,9 +50,9 @@ Card reminders are in-app planning information only. Vault Finance never sends a
 
 ## Categories
 
-Categories are reusable records typed as **Expense** or **Income**. Refunds use expense categories so refunded spending can reduce the matching budget. Categories can be created, edited, and archived from Planning. Archiving keeps all historical links intact and pauses related recurring rules.
+Categories are reusable records typed as **Expense** or **Income**. A root category can have one level of same-type subcategories. Selectors show the full path as `Parent › Child`, order each parent's children together, and keep archived historical selections readable. Both parent and child categories remain selectable for transactions, budgets, and scheduled items.
 
-The transaction form uses a category selector rather than free text. Uncategorized transactions remain supported.
+Refunds use expense categories so refunded spending can reduce the matching budget. Categories can be created, edited, and archived from Planning. A parent cannot be archived while it has active children, and archiving keeps historical links intact while pausing directly related scheduled items. Uncategorized transactions remain supported.
 
 ## Monthly budgets
 
@@ -64,7 +64,7 @@ A budget identifies all of the following explicitly:
 - Calendar month (`YYYY-MM` in that calendar)
 - Integer minor-unit budget amount
 
-Spent is calculated as same-category expenses minus same-category refunds within the exact calendar-month range. Transactions in another category, currency, or month are excluded. Vault Finance never combines currencies and does not infer exchange rates.
+A child-category budget counts only that child. A root-category budget counts direct transactions plus all of its immediate subcategories and is marked **Includes subcategories** in Planning. Spending remains expenses minus refunds within the exact calendar-month range. Transactions in another hierarchy, currency, or month are excluded. Vault Finance never combines currencies and does not infer exchange rates.
 
 ## Scheduled items and manual confirmation
 
@@ -153,13 +153,13 @@ Assign optional hotkeys under **Settings → Hotkeys**. No default hotkeys are c
 
 ## In-app reminders
 
-After Obsidian's layout is ready, Vault Finance can show one concise in-app summary for recurring occurrences and card payments that need attention. It avoids repeating the summary within the same plugin load/day where practical. Open Planning to review details.
+After Obsidian's layout is ready, Vault Finance can show one concise in-app summary for scheduled occurrences and card payments that need attention. It avoids repeating the summary within the same plugin load/day where practical. Open Planning to review details.
 
 These are Obsidian in-app notices only. Vault Finance does not claim background delivery, system notifications, network delivery, payment execution, or automatic posting.
 
 ## Data migration
 
-Schema upgrades run sequentially and are saved only after complete validation. Version 1 data first receives the lossless category migration, then version 2 scheduled rules migrate to schema version 3:
+Schema upgrades run sequentially and are saved only after complete validation. Version 1 data first receives the lossless category migration, version 2 scheduled rules migrate to schema version 3, and version 3 categories migrate unchanged to schema version 4:
 
 - Account and transaction IDs are unchanged.
 - Dates, timestamps, currencies, and integer minor amounts are preserved exactly.
@@ -169,9 +169,10 @@ Schema upgrades run sequentially and are saved only after complete validation. V
 - New budgets, scheduled rules, and resolutions start empty for version 1 data.
 - Version 2 recurring rules keep their IDs, dates, amounts, currencies, notes, active state, resolutions, and transaction links.
 - Version 2 expense rules become bills, income rules become recurring income, and both receive interval 1 and zero reminder lead days.
+- Version 3 categories remain root categories with no parent; users may organize them after migration.
 - The initial calendar is Gregorian, matching version 1 behavior.
 
-The complete migrated document is saved before it becomes the active in-memory state. If that persistence fails, Vault Finance does not commit the migrated state. Loading valid version 3 data is idempotent and does not rewrite it. Unsupported future schema versions fail without saving, protecting data from an older plugin version.
+The complete migrated document is saved before it becomes the active in-memory state. If that persistence fails, Vault Finance does not commit the migrated state. Loading valid version 4 data is idempotent and does not rewrite it. Unsupported future schema versions fail without saving, protecting data from an older plugin version.
 
 Back up your vault before any major plugin upgrade.
 
@@ -229,7 +230,7 @@ https://github.com/A-K-6/obsidian-finance
 
 - Minimum Obsidian version: **1.7.2**
 - Desktop-only: **No**
-- Current plugin version: **3.0.0**
+- Current plugin version: **4.0.0**
 
 ## Deliberate limitations
 
